@@ -114,14 +114,12 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
       <div className="md:w-1/2 bg-[#FFE27A] px-8 py-12 md:px-16 flex flex-col justify-between">
         <div className="hidden md:block" />
 
-        <div className="max-w-md">
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-[#1A1A1A]">
-            Cafe Lupe
-          </h1>
-          <p className="text-sm sm:text-base font-medium text-[#1A1A1A]/80 mt-2 leading-relaxed">
-            Centralized sales report and transaction gateway for Front-Desk, Accountant, Gym, and
-            F&amp;B POS.
-          </p>
+        <div className="max-w-md flex flex-col items-start gap-3">
+          <img
+            src="/assets/aistudio/cafelupelogo_3e1124ea.png"
+            alt="Cafe Lupe Antipolo logo"
+            className="w-[250px] sm:w-[292px] max-w-full h-auto object-contain block -ml-1 drop-shadow-[0_2px_8px_rgba(26,26,26,0.12)]"
+          />
         </div>
 
         {/* Retained Credentials Helper Drawer */}
@@ -176,10 +174,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
       <div className="md:w-1/2 flex-1 flex items-center justify-center p-6 sm:p-10 bg-[#F7F7F7]">
         {mode === 'login' && (
           <div className="w-full max-w-md bg-white rounded-2xl p-7 sm:p-8 border border-gray-200/90">
-            <h2 className="text-xl font-extrabold text-[#1A1A1A] tracking-tight">Log in</h2>
-            <p className="text-xs text-gray-500 mt-1 mb-6 leading-relaxed">
-              Sign in as Front-Desk, Accountant, Gym, or F&amp;B POS.
-            </p>
+            <h2 className="text-xl font-extrabold text-[#1A1A1A] tracking-tight mb-6">Log in</h2>
 
             {error && (
               <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs font-medium">
