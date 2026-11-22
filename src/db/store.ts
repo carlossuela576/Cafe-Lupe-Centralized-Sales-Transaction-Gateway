@@ -23,10 +23,14 @@ import {
   CashConfirmation,
   VoidRequest,
   EditRequest,
+  PaymentInstallment,
+  AiAuditLog,
+  ReconciliationBatch,
   TransactionStatus,
   PaymentArrangement,
   PaymentChannel,
   OutletSlug,
+  UserRole,
 } from '../types';
 
 import {
@@ -46,9 +50,10 @@ import {
   INITIAL_EVENTS_ROWS,
   INITIAL_CASH_CONFIRMATIONS,
   INITIAL_VOID_REQUESTS,
+  INITIAL_INSTALLMENTS,
 } from './initialData';
 
-const STORAGE_PREFIX = 'cafelupe_v2_rev001_';
+const STORAGE_PREFIX = 'cafelupe_v3_rev002_';
 
 export const TIMED_OUTLET_SLUGS: OutletSlug[] = ['billiards', 'pickleball', 'tabletennis', 'ktv'];
 
@@ -64,10 +69,28 @@ export function calculateDiscountBreakdown(
   if (!discountApplied) {
     return { discount: 0, totalAmount: cleanSelling };
   }
-  // Revision 001 Formula: Final Price = (Selling Price ÷ 1.12) × 0.80
+  // Standard SC/PWD Discount Formula: Final Price = (Selling Price ÷ 1.12) × 0.80
   const finalPrice = round2((cleanSelling / 1.12) * 0.8);
   const discount = round2(Math.max(0, cleanSelling - finalPrice));
   return { discount, totalAmount: finalPrice };
+}
+
+export function calculateFnbScPwdDiscount(
+  totalBill: number,
+  discountApplied: boolean,
+  totalPax: number,
+  validIdCount: number
+): { discount: number; totalAmount: number; clampedPax: number; clampedIds: number } {
+  const cleanBill = Math.max(0, round2(totalBill));
+  const clampedPax = Math.max(1, Math.floor(Number(totalPax) || 1));
+  const clampedIds = Math.min(clampedPax, Math.max(0, Math.floor(Number(validIdCount) || 0)));
+  if (!discountApplied || clampedIds === 0 || cleanBill === 0) {
+    return { discount: 0, totalAmount: cleanBill, clampedPax, clampedIds };
+  }
+  // Revision 002 F&B Formula: Discount = ((Total Food bill / 1.12) / Total pax × Number of SC & PWD IDs) × 0.20
+  const discount = round2(((cleanBill / 1.12) / clampedPax) * clampedIds * 0.2);
+  const totalAmount = round2(Math.max(0, cleanBill - discount));
+  return { discount, totalAmount, clampedPax, clampedIds };
 }
 
 function loadFromStorage<T>(key: string, defaultValue: T): T {
@@ -93,6 +116,7 @@ export class CafeLupeStore {
   private outlets: Outlet[] = loadFromStorage('outlets', INITIAL_OUTLETS);
   private services: ServicePreset[] = loadFromStorage('services', INITIAL_SERVICES);
   private transactions: MasterTransaction[] = loadFromStorage('transactions', INITIAL_TRANSACTIONS);
+  private installments: PaymentInstallment[] = loadFromStorage('installments', INITIAL_INSTALLMENTS);
 
   // 10 Child Tables
   private pickleballRows: PickleballTransaction[] = loadFromStorage('pickleball', INITIAL_PICKLEBALL_ROWS);
@@ -107,10 +131,12 @@ export class CafeLupeStore {
   private eventsRows: EventsTransaction[] = loadFromStorage('events', INITIAL_EVENTS_ROWS);
   private genericRows: GenericTransaction[] = loadFromStorage('generic', []);
 
-  // Workflows
+  // Governance Workflows & AI Audit Logs
   private cashConfirmations: CashConfirmation[] = loadFromStorage('cash_confirmations', INITIAL_CASH_CONFIRMATIONS);
   private voidRequests: VoidRequest[] = loadFromStorage('void_requests', INITIAL_VOID_REQUESTS);
   private editRequests: EditRequest[] = loadFromStorage('edit_requests', []);
+  private aiAuditLogs: AiAuditLog[] = loadFromStorage('ai_audit_logs', []);
+  private reconciliationBatches: ReconciliationBatch[] = loadFromStorage('reconciliation_batches', []);
 
   private listeners: Set<() => void> = new Set();
 
@@ -124,6 +150,7 @@ export class CafeLupeStore {
     saveToStorage('outlets', this.outlets);
     saveToStorage('services', this.services);
     saveToStorage('transactions', this.transactions);
+    saveToStorage('installments', this.installments);
     saveToStorage('pickleball', this.pickleballRows);
     saveToStorage('hostel', this.hostelRows);
     saveToStorage('gym', this.gymRows);
@@ -138,6 +165,8 @@ export class CafeLupeStore {
     saveToStorage('cash_confirmations', this.cashConfirmations);
     saveToStorage('void_requests', this.voidRequests);
     saveToStorage('edit_requests', this.editRequests);
+    saveToStorage('ai_audit_logs', this.aiAuditLogs);
+    saveToStorage('reconciliation_batches', this.reconciliationBatches);
 
     this.listeners.forEach((l) => l());
   }
@@ -346,8 +375,19 @@ export class CafeLupeStore {
     this.notify();
   }
 
+  public getInstallments(transactionId?: string): PaymentInstallment[] {
+    if (!transactionId) return [...this.installments];
+    return this.installments.filter((i) => i.transactionId === transactionId);
+  }
+
+  public getPendingInstallment(transactionId: string): PaymentInstallment | undefined {
+    return this.installments.find(
+      (i) => i.transactionId === transactionId && i.status === 'pending'
+    );
+  }
+
   /**
-   * Create Master Transaction + dedicated child table record (Revision 001)
+   * Create Master Transaction + dedicated child table record + initial installment (Revision 002)
    */
   public createTransaction(params: {
     outletSlug: OutletSlug;
@@ -370,26 +410,34 @@ export class CafeLupeStore {
     const year = new Date().getFullYear();
     const transactionID = `TRX-${year}-${String(count).padStart(4, '0')}`;
     const discountApplied = Boolean(params.discountApplied);
-    const { discount, totalAmount } = calculateDiscountBreakdown(params.transactionAmount, discountApplied);
 
-    let amountPaid = 0;
-    if (totalAmount === 0) {
-      amountPaid = 0;
-    } else if (params.paymentArrangement === 'Down Payment') {
-      const rawDown = Number(params.downPaymentAmount) || 0;
-      amountPaid = round2(Math.min(totalAmount, Math.max(0, rawDown)));
-    } else if (params.paymentChannel === 'Cash') {
-      amountPaid = totalAmount;
-    } else {
-      // Full Payment via QRPh waits for simulated scan before payment clears
-      amountPaid = 0;
-    }
+    const { discount, totalAmount } =
+      params.outletSlug === 'fnb'
+        ? calculateFnbScPwdDiscount(
+            params.transactionAmount,
+            discountApplied,
+            Number(params.childTableData?.totalPax || 1),
+            Number(params.childTableData?.validIdCount || 0)
+          )
+        : calculateDiscountBreakdown(params.transactionAmount, discountApplied);
 
+    const nowIso = new Date().toISOString();
+    const isDownPaymentFlow = params.paymentArrangement === 'Down Payment' && totalAmount > 0;
+    const plannedDownAmount = isDownPaymentFlow
+      ? round2(Math.min(totalAmount, Math.max(0, Number(params.downPaymentAmount) || 0)))
+      : totalAmount;
+
+    // Revision 002 Down Payment Fix:
+    // Both Cash and QRPh Down Payments start with amountPaid = 0 and require explicit initial payment confirmation first.
+    // Full Payment Cash clears immediately (unless totalAmount === 0 which also clears immediately).
+    const isPaidNow =
+      totalAmount === 0 ||
+      (!isDownPaymentFlow && params.paymentChannel === 'Cash');
+
+    const amountPaid = isPaidNow ? totalAmount : 0;
     const balanceDue = round2(Math.max(0, totalAmount - amountPaid));
-    const isPaidNow = totalAmount === 0 || (balanceDue <= 0 && params.paymentChannel === 'Cash');
-
     const initialStatus: TransactionStatus = isPaidNow ? 'paid' : 'pending';
-    const paidAt = isPaidNow ? new Date().toISOString() : null;
+    const paidAt = isPaidNow ? nowIso : null;
     const qrToken =
       params.paymentChannel === 'QRPh' && !isPaidNow
         ? `QRPH-${year}-${params.outletSlug.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
@@ -489,6 +537,8 @@ export class CafeLupeStore {
           orderItems: params.childTableData.orderItems || [],
           receiptPrintedAt: params.childTableData.receiptPrintedAt || new Date().toISOString(),
           tableOrRoomNo: params.childTableData.tableOrRoomNo || 'Table 1',
+          totalPax: Number(params.childTableData.totalPax || 1),
+          validIdCount: Number(params.childTableData.validIdCount || 0),
         });
         break;
 
@@ -551,6 +601,9 @@ export class CafeLupeStore {
         break;
     }
 
+    const resolvedReceiver =
+      params.paymentChannel === 'Cash' ? (params.cashReceivedBy || params.employeeHandler) : null;
+
     const newTx: MasterTransaction = {
       transactionID,
       outletName: params.outletName,
@@ -559,7 +612,7 @@ export class CafeLupeStore {
       customerName: params.customerName,
       employeeHandler: params.employeeHandler,
       employeeId: params.employeeId,
-      cashReceivedBy: params.paymentChannel === 'Cash' ? (params.cashReceivedBy || params.employeeHandler) : null,
+      cashReceivedBy: resolvedReceiver,
       transactionAmount: round2(params.transactionAmount),
       discountApplied,
       discount,
@@ -567,9 +620,11 @@ export class CafeLupeStore {
       amountPaid,
       balanceDue,
       transactionStatus: initialStatus,
-      transactionDateTime: new Date().toISOString(),
+      transactionDateTime: nowIso,
       paymentArrangement: params.paymentArrangement,
       paymentChannel: params.paymentChannel,
+      initialPaymentMode: params.paymentChannel,
+      balancePaymentMode: null,
       outletRefTable: childTable,
       outletRefId: childId,
       qrToken,
@@ -578,22 +633,43 @@ export class CafeLupeStore {
       timerDurationMinutes: timerMins,
       timerStartedAt,
       timerEndsAt,
+      timerStoppedAt: null,
       timerAcknowledged: false,
       version: 1,
     };
 
     this.transactions.unshift(newTx);
 
-    if (params.paymentChannel === 'Cash' && amountPaid > 0) {
+    // Record Initial Payment Installment
+    const initialInstallmentId = `inst-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    if (totalAmount > 0) {
+      this.installments.unshift({
+        installmentID: initialInstallmentId,
+        transactionId: transactionID,
+        phase: 'initial',
+        paymentChannel: params.paymentChannel,
+        amount: isDownPaymentFlow ? plannedDownAmount : totalAmount,
+        status: isPaidNow ? 'confirmed' : 'pending',
+        cashReceivedBy: resolvedReceiver,
+        qrToken,
+        paidAt: isPaidNow ? nowIso : null,
+        createdAt: nowIso,
+      });
+    }
+
+    // Only queue CashConfirmation immediately when Full Payment Cash is already collected.
+    // Down Payment Cash queues CashConfirmation once the clerk confirms initial down payment collection.
+    if (params.paymentChannel === 'Cash' && isPaidNow && amountPaid > 0) {
       this.cashConfirmations.unshift({
         id: `csh-${Date.now()}`,
         transactionId: transactionID,
+        installmentId: initialInstallmentId,
         outletName: params.outletName,
         customerName: params.customerName,
         amount: amountPaid,
         cashReceivedBy: newTx.cashReceivedBy,
         status: 'pending_audit',
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
       });
     }
 
@@ -602,44 +678,198 @@ export class CafeLupeStore {
   }
 
   /**
-   * Pay remaining balance via Cash (Confirm Payment) or QRPh (Revision 001)
+   * Confirm Initial Down Payment (Cash or QRPh) - Revision 002 Two-Step Fix
+   * Keeps transaction 'pending' with only the remaining balance left to pay.
+   */
+  public confirmInitialDownPayment(
+    transactionId: string,
+    cashReceivedBy?: string
+  ): { success: boolean; transaction?: MasterTransaction; settledAmount: number } {
+    const tx = this.getTransactionById(transactionId);
+    if (!tx) return { success: false, settledAmount: 0 };
+
+    const pendingInit = this.installments.find(
+      (i) => i.transactionId === transactionId && i.phase === 'initial' && i.status === 'pending'
+    );
+    if (!pendingInit) return { success: false, settledAmount: 0 };
+
+    const nowIso = new Date().toISOString();
+    const receiver =
+      pendingInit.paymentChannel === 'Cash'
+        ? cashReceivedBy?.trim() || pendingInit.cashReceivedBy || tx.cashReceivedBy || tx.employeeHandler
+        : tx.cashReceivedBy;
+
+    this.installments = this.installments.map((inst) =>
+      inst.installmentID === pendingInit.installmentID
+        ? { ...inst, status: 'confirmed', cashReceivedBy: receiver, paidAt: nowIso }
+        : inst
+    );
+
+    const newPaid = round2(Math.min(tx.totalAmount, tx.amountPaid + pendingInit.amount));
+    const newBalance = round2(Math.max(0, tx.totalAmount - newPaid));
+    const isNowFullyPaid = newBalance <= 0;
+
+    const updated: MasterTransaction = {
+      ...tx,
+      initialPaymentMode: pendingInit.paymentChannel,
+      paymentChannel: pendingInit.paymentChannel,
+      cashReceivedBy: receiver || tx.cashReceivedBy,
+      amountPaid: newPaid,
+      balanceDue: newBalance,
+      transactionStatus: isNowFullyPaid ? 'paid' : 'pending',
+      paidAt: isNowFullyPaid ? nowIso : null,
+      version: tx.version + 1,
+    };
+
+    this.transactions = this.transactions.map((t) =>
+      t.transactionID === transactionId ? updated : t
+    );
+
+    if (pendingInit.paymentChannel === 'Cash' && pendingInit.amount > 0) {
+      this.cashConfirmations.unshift({
+        id: `csh-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+        transactionId: tx.transactionID,
+        installmentId: pendingInit.installmentID,
+        outletName: tx.outletName,
+        customerName: tx.customerName,
+        amount: pendingInit.amount,
+        cashReceivedBy: receiver || tx.employeeHandler,
+        status: 'pending_audit',
+        createdAt: nowIso,
+      });
+    }
+
+    this.notify();
+    return { success: true, transaction: updated, settledAmount: pendingInit.amount };
+  }
+
+  /**
+   * Edge Case: Customer cancels/refuses the initial down payment -> instant void (Revision 002)
+   */
+  public voidCancelledInitialPayment(transactionId: string): void {
+    const tx = this.getTransactionById(transactionId);
+    if (!tx) return;
+
+    this.installments = this.installments.map((inst) =>
+      inst.transactionId === transactionId && inst.status === 'pending'
+        ? { ...inst, status: 'voided' }
+        : inst
+    );
+
+    this.transactions = this.transactions.map((t) =>
+      t.transactionID === transactionId
+        ? {
+            ...t,
+            transactionStatus: 'void',
+            amountPaid: 0,
+            balanceDue: 0,
+            timerEndsAt: null,
+            timerAcknowledged: true,
+            version: t.version + 1,
+          }
+        : t
+    );
+    this.notify();
+  }
+
+  /**
+   * Pay remaining balance via Cash or QRPh with independent follow-up mode switching (Revision 002)
    */
   public payBalance(
     transactionId: string,
     channel: PaymentChannel,
     cashReceivedBy?: string
-  ): { success: boolean; transaction?: MasterTransaction } {
+  ): { success: boolean; transaction?: MasterTransaction; installment?: PaymentInstallment } {
     const tx = this.getTransactionById(transactionId);
     if (!tx) return { success: false };
 
-    const remaining = tx.balanceDue > 0 ? tx.balanceDue : tx.totalAmount;
+    const nowIso = new Date().toISOString();
+    const year = new Date().getFullYear();
+
+    // Determine whether we are settling an unconfirmed initial installment or a follow-up balance
+    const pendingInit = this.installments.find(
+      (i) => i.transactionId === transactionId && i.phase === 'initial' && i.status === 'pending'
+    );
+    const isUnconfirmedInitialDown =
+      Boolean(pendingInit) && tx.paymentArrangement === 'Down Payment' && tx.amountPaid === 0;
+
+    const targetPhase: 'initial' | 'balance' = pendingInit ? pendingInit.phase : 'balance';
+    const targetAmount = isUnconfirmedInitialDown
+      ? pendingInit!.amount
+      : tx.balanceDue > 0
+      ? tx.balanceDue
+      : tx.totalAmount;
 
     if (channel === 'Cash') {
       const receiver = cashReceivedBy?.trim() || tx.cashReceivedBy || tx.employeeHandler;
+
+      // If settling an unconfirmed initial down payment in Cash, route through confirmInitialDownPayment
+      if (isUnconfirmedInitialDown && pendingInit) {
+        this.installments = this.installments.map((i) =>
+          i.installmentID === pendingInit.installmentID
+            ? { ...i, paymentChannel: 'Cash', cashReceivedBy: receiver }
+            : i
+        );
+        const res = this.confirmInitialDownPayment(transactionId, receiver);
+        return { success: res.success, transaction: res.transaction };
+      }
+
+      let targetInstId = pendingInit?.installmentID;
+      if (pendingInit) {
+        this.installments = this.installments.map((i) =>
+          i.installmentID === pendingInit.installmentID
+            ? {
+                ...i,
+                paymentChannel: 'Cash',
+                amount: targetAmount,
+                status: 'confirmed',
+                cashReceivedBy: receiver,
+                paidAt: nowIso,
+              }
+            : i
+        );
+      } else {
+        targetInstId = `inst-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        this.installments.unshift({
+          installmentID: targetInstId,
+          transactionId: tx.transactionID,
+          phase: 'balance',
+          paymentChannel: 'Cash',
+          amount: targetAmount,
+          status: 'confirmed',
+          cashReceivedBy: receiver,
+          paidAt: nowIso,
+          createdAt: nowIso,
+        });
+      }
+
       const updated: MasterTransaction = {
         ...tx,
         paymentChannel: 'Cash',
+        initialPaymentMode: tx.initialPaymentMode || tx.paymentChannel,
+        balancePaymentMode: targetPhase === 'balance' ? 'Cash' : tx.balancePaymentMode || null,
         cashReceivedBy: receiver,
         amountPaid: tx.totalAmount,
         balanceDue: 0,
         transactionStatus: 'paid',
-        paidAt: new Date().toISOString(),
+        paidAt: nowIso,
         version: tx.version + 1,
       };
       this.transactions = this.transactions.map((t) =>
         t.transactionID === transactionId ? updated : t
       );
 
-      if (remaining > 0) {
+      if (targetAmount > 0) {
         this.cashConfirmations.unshift({
           id: `csh-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
           transactionId: tx.transactionID,
+          installmentId: targetInstId,
           outletName: tx.outletName,
           customerName: tx.customerName,
-          amount: remaining,
+          amount: targetAmount,
           cashReceivedBy: receiver,
           status: 'pending_audit',
-          createdAt: new Date().toISOString(),
+          createdAt: nowIso,
         });
       }
 
@@ -647,21 +877,52 @@ export class CafeLupeStore {
       return { success: true, transaction: updated };
     }
 
-    // QRPh: prepare/refresh qrToken for simulated scan
-    const year = new Date().getFullYear();
+    // QRPh follow-up or mode switch: prepare/reuse pending installment for exact targetAmount
+    const nextQrToken =
+      tx.qrToken ||
+      `QRPH-${year}-${tx.outletSlug.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
+    const existingPendingBal = this.installments.find(
+      (i) => i.transactionId === transactionId && i.status === 'pending'
+    );
+
+    let activeInstallment: PaymentInstallment;
+    if (existingPendingBal) {
+      activeInstallment = {
+        ...existingPendingBal,
+        paymentChannel: 'QRPh',
+        amount: targetAmount,
+        qrToken: nextQrToken,
+      };
+      this.installments = this.installments.map((i) =>
+        i.installmentID === existingPendingBal.installmentID ? activeInstallment : i
+      );
+    } else {
+      activeInstallment = {
+        installmentID: `inst-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        transactionId: tx.transactionID,
+        phase: targetPhase,
+        paymentChannel: 'QRPh',
+        amount: targetAmount,
+        status: 'pending',
+        qrToken: nextQrToken,
+        createdAt: nowIso,
+      };
+      this.installments.unshift(activeInstallment);
+    }
+
     const updated: MasterTransaction = {
       ...tx,
       paymentChannel: 'QRPh',
-      qrToken:
-        tx.qrToken ||
-        `QRPH-${year}-${tx.outletSlug.toUpperCase()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+      initialPaymentMode: tx.initialPaymentMode || tx.paymentChannel,
+      qrToken: nextQrToken,
       version: tx.version + 1,
     };
     this.transactions = this.transactions.map((t) =>
       t.transactionID === transactionId ? updated : t
     );
     this.notify();
-    return { success: true, transaction: updated };
+    return { success: true, transaction: updated, installment: activeInstallment };
   }
 
   /**
@@ -738,6 +999,22 @@ export class CafeLupeStore {
     this.notify();
   }
 
+  public stopTimer(transactionId: string): void {
+    const nowIso = new Date().toISOString();
+    this.transactions = this.transactions.map((t) =>
+      t.transactionID === transactionId
+        ? {
+            ...t,
+            timerStoppedAt: nowIso,
+            timerEndsAt: nowIso,
+            timerAcknowledged: true,
+            version: t.version + 1,
+          }
+        : t
+    );
+    this.notify();
+  }
+
   public updatePendingTransaction(
     transactionId: string,
     updates: Partial<MasterTransaction>,
@@ -789,22 +1066,74 @@ export class CafeLupeStore {
   }
 
   /**
-   * QrPh Prototype Validation (NFR2)
+   * QrPh Prototype Validation (NFR2 + Revision 002 Two-Step Down Payment Fix)
    */
   public validateQrPayment(transactionId: string): { success: boolean; message: string } {
     const tx = this.getTransactionById(transactionId);
     if (!tx) return { success: false, message: 'Transaction not found.' };
 
-    const settledAmount = tx.balanceDue > 0 ? tx.balanceDue : tx.totalAmount;
+    const pendingInst = this.getPendingInstallment(transactionId);
+
+    // Case 1: Initial Down Payment via QRPh (only collects the initial down payment, leaves balanceDue pending)
+    if (
+      pendingInst &&
+      pendingInst.phase === 'initial' &&
+      tx.paymentArrangement === 'Down Payment' &&
+      tx.amountPaid === 0
+    ) {
+      const res = this.confirmInitialDownPayment(transactionId);
+      const remaining = res.transaction?.balanceDue ?? 0;
+      return {
+        success: true,
+        message: `Initial QR Ph down payment of ₱${res.settledAmount.toLocaleString('en-PH', {
+          minimumFractionDigits: 2,
+        })} verified! Remaining balance: ₱${remaining.toLocaleString('en-PH', {
+          minimumFractionDigits: 2,
+        })}.`,
+      };
+    }
+
+    // Case 2: Full Payment QRPh OR follow-up Remaining Balance QRPh
+    const settledAmount = pendingInst
+      ? pendingInst.amount
+      : tx.balanceDue > 0
+      ? tx.balanceDue
+      : tx.totalAmount;
+    const nowIso = new Date().toISOString();
+
+    if (pendingInst) {
+      this.installments = this.installments.map((i) =>
+        i.installmentID === pendingInst.installmentID
+          ? { ...i, status: 'confirmed', paidAt: nowIso }
+          : i
+      );
+    } else if (settledAmount > 0) {
+      this.installments.unshift({
+        installmentID: `inst-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        transactionId,
+        phase: tx.paymentArrangement === 'Down Payment' ? 'balance' : 'initial',
+        paymentChannel: 'QRPh',
+        amount: settledAmount,
+        status: 'confirmed',
+        qrToken: tx.qrToken,
+        paidAt: nowIso,
+        createdAt: nowIso,
+      });
+    }
 
     this.transactions = this.transactions.map((t) =>
       t.transactionID === transactionId
         ? {
             ...t,
+            paymentChannel: 'QRPh',
+            balancePaymentMode:
+              t.paymentArrangement === 'Down Payment' && t.amountPaid > 0
+                ? 'QRPh'
+                : t.balancePaymentMode || null,
             amountPaid: t.totalAmount,
             balanceDue: 0,
             transactionStatus: 'paid',
-            paidAt: new Date().toISOString(),
+            paidAt: nowIso,
             version: t.version + 1,
           }
         : t
@@ -878,7 +1207,7 @@ export class CafeLupeStore {
     this.notify();
   }
 
-  // --- Workflows: Accountant Edit Requests ---
+  // --- Workflows: Edit Requests (Front-Desk / Clerks -> Accountant Approval) ---
   public getEditRequests(): EditRequest[] {
     return [...this.editRequests];
   }
@@ -888,13 +1217,15 @@ export class CafeLupeStore {
     requestedBy: string,
     requestedByName: string,
     changes: EditRequest['changes'],
-    note: string
+    note: string,
+    requestedByRole: UserRole = 'admin'
   ): EditRequest {
     const req: EditRequest = {
       id: `edit-${Date.now()}`,
       transactionId,
       requestedBy,
       requestedByName,
+      requestedByRole,
       changes,
       note,
       status: 'pending',
@@ -905,17 +1236,18 @@ export class CafeLupeStore {
     return req;
   }
 
-  public decideEditRequest(id: string, decision: 'approved' | 'rejected', adminName: string): void {
+  public decideEditRequest(id: string, decision: 'approved' | 'rejected', accountantName: string): void {
     const req = this.editRequests.find((r) => r.id === id);
     if (!req) return;
 
     this.editRequests = this.editRequests.map((r) =>
-      r.id === id ? { ...r, status: decision, decidedBy: adminName, decidedAt: new Date().toISOString() } : r
+      r.id === id ? { ...r, status: decision, decidedBy: accountantName, decidedAt: new Date().toISOString() } : r
     );
 
     if (decision === 'approved') {
       this.transactions = this.transactions.map((t) => {
         if (t.transactionID !== req.transactionId) return t;
+        const newCustomer = req.changes.customerName !== undefined ? req.changes.customerName : t.customerName;
         const newStatus = req.changes.transactionStatus || t.transactionStatus;
         const newAmount = req.changes.transactionAmount !== undefined ? req.changes.transactionAmount : t.transactionAmount;
         const newDiscount = req.changes.discount !== undefined ? req.changes.discount : t.discount;
@@ -923,12 +1255,13 @@ export class CafeLupeStore {
         const newPaid = newStatus === 'paid' ? newTotal : Math.min(t.amountPaid, newTotal);
         return {
           ...t,
+          customerName: newCustomer,
           transactionStatus: newStatus,
           transactionAmount: newAmount,
           discount: newDiscount,
           totalAmount: newTotal,
           amountPaid: newPaid,
-          balanceDue: round2(Math.max(0, newTotal - newPaid)),
+          balanceDue: newStatus === 'void' ? 0 : round2(Math.max(0, newTotal - newPaid)),
           version: t.version + 1,
         };
       });
@@ -936,8 +1269,8 @@ export class CafeLupeStore {
     this.notify();
   }
 
-  // --- Admin Direct Privileges ---
-  public adminDirectUpdate(transactionId: string, updates: Partial<MasterTransaction>): void {
+  // --- Accountant Direct Privileges (Revision 002: Accountant edits require no approval) ---
+  public accountantDirectUpdate(transactionId: string, updates: Partial<MasterTransaction>): void {
     this.transactions = this.transactions.map((t) => {
       if (t.transactionID !== transactionId) return t;
       const amount = updates.transactionAmount !== undefined ? updates.transactionAmount : t.transactionAmount;
@@ -952,18 +1285,55 @@ export class CafeLupeStore {
         discount,
         totalAmount: total,
         amountPaid: paid,
-        balanceDue: round2(Math.max(0, total - paid)),
+        balanceDue: status === 'void' ? 0 : round2(Math.max(0, total - paid)),
         version: t.version + 1,
       };
     });
     this.notify();
   }
 
+  public adminDirectUpdate(transactionId: string, updates: Partial<MasterTransaction>): void {
+    this.accountantDirectUpdate(transactionId, updates);
+  }
+
   public adminDirectDelete(transactionId: string): void {
     this.transactions = this.transactions.filter((t) => t.transactionID !== transactionId);
+    this.installments = this.installments.filter((i) => i.transactionId !== transactionId);
     this.cashConfirmations = this.cashConfirmations.filter((c) => c.transactionId !== transactionId);
     this.voidRequests = this.voidRequests.filter((v) => v.transactionId !== transactionId);
     this.notify();
+  }
+
+  // --- AI Audit & Bank Reconciliation Persistence (Revision 002) ---
+  public getAiAuditLogs(): AiAuditLog[] {
+    return [...this.aiAuditLogs];
+  }
+
+  public addAiAuditLog(log: Omit<AiAuditLog, 'auditID' | 'createdAt'>): AiAuditLog {
+    const entry: AiAuditLog = {
+      ...log,
+      auditID: `AUD-${Date.now()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}`,
+      createdAt: new Date().toISOString(),
+    };
+    this.aiAuditLogs.unshift(entry);
+    this.notify();
+    return entry;
+  }
+
+  public getReconciliationBatches(outletId?: string): ReconciliationBatch[] {
+    if (!outletId) return [...this.reconciliationBatches];
+    return this.reconciliationBatches.filter((b) => b.outletId === outletId);
+  }
+
+  public addReconciliationBatch(batch: Omit<ReconciliationBatch, 'reconID' | 'createdAt'>): ReconciliationBatch {
+    const entry: ReconciliationBatch = {
+      ...batch,
+      reconID: `REC-${Date.now()}-${Math.random().toString(36).substring(2, 5).toUpperCase()}`,
+      createdAt: new Date().toISOString(),
+    };
+    this.reconciliationBatches.unshift(entry);
+    this.notify();
+    return entry;
   }
 
   public resetToFactory(): void {
@@ -972,6 +1342,7 @@ export class CafeLupeStore {
     this.outlets = [...INITIAL_OUTLETS];
     this.services = [...INITIAL_SERVICES];
     this.transactions = [...INITIAL_TRANSACTIONS];
+    this.installments = [...INITIAL_INSTALLMENTS];
     this.pickleballRows = [...INITIAL_PICKLEBALL_ROWS];
     this.hostelRows = [...INITIAL_HOSTEL_ROWS];
     this.gymRows = [...INITIAL_GYM_ROWS];
@@ -986,13 +1357,15 @@ export class CafeLupeStore {
     this.cashConfirmations = [...INITIAL_CASH_CONFIRMATIONS];
     this.voidRequests = [...INITIAL_VOID_REQUESTS];
     this.editRequests = [];
+    this.aiAuditLogs = [];
+    this.reconciliationBatches = [];
     this.notify();
   }
 
-  // --- Code Generators (Revision 001 Exportable PHP & MySQL Artifacts) ---
+  // --- Code Generators (Revision 002 Internal PHP & MySQL Schema Artifacts) ---
   public generateMySQLSchema(): string {
     return `-- =====================================================================
--- CAFE LUPE CENTRALIZED SALES REPORT AND TRANSACTION GATEWAY (REV 001)
+-- CAFE LUPE CENTRALIZED SALES REPORT AND TRANSACTION GATEWAY (REV 002)
 -- Complete Production MySQL / MariaDB Schema
 -- =====================================================================
 
@@ -1020,7 +1393,7 @@ CREATE TABLE IF NOT EXISTS \`outlets\` (
   \`is_active\` TINYINT(1) NOT NULL DEFAULT 1
 ) ENGINE=InnoDB;
 
--- 3. Master Transactions Ledger (Revision 001 Columns)
+-- 3. Master Transactions Ledger (Revision 002 Columns)
 CREATE TABLE IF NOT EXISTS \`transactions\` (
   \`transactionID\` VARCHAR(50) PRIMARY KEY,
   \`outletName\` VARCHAR(100) NOT NULL,
@@ -1038,6 +1411,8 @@ CREATE TABLE IF NOT EXISTS \`transactions\` (
   \`transactionDateTime\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   \`paymentArrangement\` ENUM('Full Payment', 'Down Payment') NOT NULL,
   \`paymentChannel\` ENUM('Cash', 'QRPh') NOT NULL,
+  \`initial_payment_mode\` ENUM('Cash', 'QRPh') NULL,
+  \`balance_payment_mode\` ENUM('Cash', 'QRPh') NULL,
   \`outlet_ref_table\` VARCHAR(50) NOT NULL,
   \`outlet_ref_id\` VARCHAR(50) NOT NULL,
   \`qr_token\` VARCHAR(100) NULL,
@@ -1046,12 +1421,57 @@ CREATE TABLE IF NOT EXISTS \`transactions\` (
   \`timerDurationMinutes\` INT NULL,
   \`timerStartedAt\` DATETIME NULL,
   \`timerEndsAt\` DATETIME NULL,
+  \`timer_stopped_at\` DATETIME NULL,
   \`timerAcknowledged\` TINYINT(1) NOT NULL DEFAULT 0,
   \`locked_by\` VARCHAR(50) NULL,
   \`locked_at\` DATETIME NULL,
   \`version\` INT UNSIGNED NOT NULL DEFAULT 1,
   INDEX \`idx_tx_datetime\` (\`transactionDateTime\`),
   INDEX \`idx_tx_status\` (\`transactionStatus\`)
+) ENGINE=InnoDB;
+
+-- 3B. Split Payment Installments Table (Revision 002)
+CREATE TABLE IF NOT EXISTS \`payment_installments\` (
+  \`installmentID\` VARCHAR(50) PRIMARY KEY,
+  \`transaction_id\` VARCHAR(50) NOT NULL,
+  \`phase\` ENUM('initial', 'balance') NOT NULL,
+  \`payment_channel\` ENUM('Cash', 'QRPh') NOT NULL,
+  \`amount\` DECIMAL(10, 2) NOT NULL,
+  \`status\` ENUM('pending', 'confirmed', 'voided') NOT NULL DEFAULT 'pending',
+  \`cash_received_by\` VARCHAR(100) NULL,
+  \`qr_token\` VARCHAR(100) NULL,
+  \`paid_at\` DATETIME NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (\`transaction_id\`) REFERENCES \`transactions\`(\`transactionID\`) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 3C. AI Audit Logs & Per-Outlet Bank Reconciliation Batches (Revision 002)
+CREATE TABLE IF NOT EXISTS \`ai_audit_logs\` (
+  \`auditID\` VARCHAR(50) PRIMARY KEY,
+  \`audit_type\` ENUM('deposit_validation', 'financial_summary', 'forecast_plan', 'advisor_query') NOT NULL,
+  \`target_date\` DATE NULL,
+  \`system_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  \`extracted_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  \`discrepancy_amount\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  \`match_status\` ENUM('matched', 'conflict', 'info') NOT NULL DEFAULT 'info',
+  \`extracted_json\` JSON NULL,
+  \`summary_text\` TEXT NULL,
+  \`created_by\` VARCHAR(100) NOT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS \`reconciliation_batches\` (
+  \`reconID\` VARCHAR(50) PRIMARY KEY,
+  \`outlet_id\` VARCHAR(50) NOT NULL,
+  \`outlet_name\` VARCHAR(100) NOT NULL,
+  \`start_date\` DATE NOT NULL,
+  \`end_date\` DATE NOT NULL,
+  \`statement_filename\` VARCHAR(255) NOT NULL,
+  \`extracted_entries_json\` JSON NULL,
+  \`comparison_results_json\` JSON NULL,
+  \`overall_status\` ENUM('matched', 'conflict') NOT NULL,
+  \`created_by\` VARCHAR(100) NOT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
 -- 4. Dedicated Outlet Child Tables (Revision 001)
@@ -1153,6 +1573,8 @@ CREATE TABLE IF NOT EXISTS \`fnb_transactions\` (
   \`audited_to\` ENUM('Walk-in Client', 'Function Guest', 'KTV Room User') NOT NULL,
   \`table_or_room_no\` VARCHAR(50) NULL,
   \`order_items\` JSON NOT NULL,
+  \`total_pax\` INT NOT NULL DEFAULT 1,
+  \`valid_id_count\` INT NOT NULL DEFAULT 0,
   \`receipt_printed_at\` DATETIME NULL,
   FOREIGN KEY (\`transaction_id\`) REFERENCES \`transactions\`(\`transactionID\`) ON DELETE CASCADE
 ) ENGINE=InnoDB;

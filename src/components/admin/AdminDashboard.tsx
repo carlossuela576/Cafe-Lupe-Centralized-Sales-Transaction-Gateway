@@ -3,9 +3,6 @@ import {
   User,
   Outlet,
   MasterTransaction,
-  CashConfirmation,
-  VoidRequest,
-  EditRequest,
   OutletSlug,
   TransactionStatus,
 } from '../../types';
@@ -13,22 +10,22 @@ import { store } from '../../db/store';
 import { SidebarShell, SidebarNavItem } from '../common/SidebarShell';
 import { StatTile } from '../common/StatTile';
 import { StatusChip } from '../common/StatusChip';
+import { TransactionDetailsModal } from '../common/TransactionDetailsModal';
 import {
   LayoutGrid,
   UserCheck,
-  Inbox,
   Building2,
   Edit3,
-  Trash2,
+  XCircle,
   Plus,
   ChevronDown,
+  Eye,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
   adminUser: User;
   onSelectOutlet: (outletSlug: OutletSlug) => void;
   onOpenProfile: () => void;
-  onOpenExport: () => void;
   onLogout: () => void;
 }
 
@@ -36,28 +33,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   adminUser,
   onSelectOutlet,
   onOpenProfile,
-  onOpenExport,
   onLogout,
 }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'approvals' | 'requests' | 'outlets'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'approvals' | 'outlets'>('dashboard');
 
   const [transactions, setTransactions] = useState<MasterTransaction[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [cashConfirmations, setCashConfirmations] = useState<CashConfirmation[]>([]);
-  const [voidRequests, setVoidRequests] = useState<VoidRequest[]>([]);
-  const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
+  const [bannerNotice, setBannerNotice] = useState<string | null>(null);
 
   // Filtering
   const [txStatusFilter, setTxStatusFilter] = useState<'all' | TransactionStatus>('all');
   const [txSearch, setTxSearch] = useState('');
 
-  // Direct edit modal (FR85)
-  const [adminEditingTx, setAdminEditingTx] = useState<MasterTransaction | null>(null);
+  // Transaction Details (Eye icon)
+  const [detailTx, setDetailTx] = useState<MasterTransaction | null>(null);
+
+  // Edit Request modal (Front-Desk -> Accountant Approval per Rev 002)
+  const [editingTx, setEditingTx] = useState<MasterTransaction | null>(null);
   const [editAmount, setEditAmount] = useState<number>(0);
   const [editDiscount, setEditDiscount] = useState<number>(0);
   const [editStatus, setEditStatus] = useState<TransactionStatus>('paid');
   const [editCustomer, setEditCustomer] = useState<string>('');
+  const [editNote, setEditNote] = useState<string>('');
+
+  // Void Request modal (Front-Desk -> Accountant Approval per Rev 002)
+  const [voidingTx, setVoidingTx] = useState<MasterTransaction | null>(null);
+  const [voidReason, setVoidReason] = useState<string>('Customer cancelled');
+  const [voidNote, setVoidNote] = useState<string>('');
 
   // Dynamic Outlet / Service creation (FR88)
   const [showAddOutlet, setShowAddOutlet] = useState(false);
@@ -73,9 +76,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadData = () => {
     setTransactions(store.getTransactions());
     setUsers(store.getUsers());
-    setCashConfirmations(store.getCashConfirmations());
-    setVoidRequests(store.getVoidRequests());
-    setEditRequests(store.getEditRequests());
     setOutlets(store.getOutlets());
   };
 
@@ -85,15 +85,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return () => unsub();
   }, []);
 
+  const showNotice = (msg: string) => {
+    setBannerNotice(msg);
+    window.setTimeout(() => {
+      setBannerNotice((prev) => (prev === msg ? null : prev));
+    }, 5000);
+  };
+
   const totalGrossSales = transactions
     .filter((t) => t.transactionStatus === 'paid')
     .reduce((acc, t) => acc + t.totalAmount, 0);
 
-  const pendingCashItems = cashConfirmations.filter((c) => c.status === 'pending_audit');
-  const pendingCashDeposits = pendingCashItems.reduce((acc, c) => acc + c.amount, 0);
+  const pendingBalancesTotal = transactions
+    .filter((t) => t.transactionStatus === 'pending')
+    .reduce((acc, t) => acc + (t.balanceDue > 0 ? t.balanceDue : t.totalAmount), 0);
+
+  const pendingCount = transactions.filter((t) => t.transactionStatus === 'pending').length;
   const pendingUsers = users.filter((u) => u.approvalStatus === 'pending');
-  const pendingVoids = voidRequests.filter((v) => v.status === 'pending');
-  const pendingEdits = editRequests.filter((e) => e.status === 'pending');
 
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -116,25 +124,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const navItems: SidebarNavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid },
     { id: 'approvals', label: 'Approvals', icon: UserCheck, badge: pendingUsers.length },
-    {
-      id: 'requests',
-      label: 'Requests',
-      icon: Inbox,
-      badge: pendingVoids.length + pendingCashItems.length + pendingEdits.length,
-    },
     { id: 'outlets', label: 'Outlets', icon: Building2 },
   ];
 
-  const handleSaveAdminEdit = (e: React.FormEvent) => {
+  const handleSubmitFrontDeskEditRequest = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminEditingTx) return;
-    store.adminDirectUpdate(adminEditingTx.transactionID, {
-      customerName: editCustomer,
-      transactionAmount: editAmount,
-      discount: editDiscount,
-      transactionStatus: editStatus,
-    });
-    setAdminEditingTx(null);
+    if (!editingTx || !editNote.trim()) return;
+    store.createEditRequest(
+      editingTx.transactionID,
+      adminUser.id,
+      adminUser.name,
+      {
+        customerName: editCustomer,
+        transactionAmount: editAmount,
+        discount: editDiscount,
+        totalAmount: Math.max(0, editAmount - editDiscount),
+        transactionStatus: editStatus,
+      },
+      editNote.trim(),
+      'admin'
+    );
+    showNotice(`Edit request for ${editingTx.transactionID} sent to Accountant for approval.`);
+    setEditingTx(null);
+  };
+
+  const handleSubmitFrontDeskVoidRequest = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!voidingTx || !voidReason) return;
+    store.createVoidRequest(
+      voidingTx.transactionID,
+      adminUser.id,
+      adminUser.name,
+      adminUser.role,
+      voidReason,
+      voidNote
+    );
+    showNotice(`Void request for ${voidingTx.transactionID} sent to Accountant for approval.`);
+    setVoidingTx(null);
   };
 
   const handleCreateOutlet = (e: React.FormEvent) => {
@@ -156,6 +182,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const frontDeskOutlets = store.getFrontDeskOutlets();
 
+  const sidebarOutletSelector = (
+    <div className="px-1 pt-0.5 space-y-1.5">
+      <div className="px-2.5 text-[10px] font-extrabold uppercase tracking-wider text-[#1A1A1A]/60">
+        Outlet Selector
+      </div>
+      <div className="relative">
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) onSelectOutlet(e.target.value as OutletSlug);
+          }}
+          aria-label="Outlet Selector"
+          className="w-full px-3.5 py-2.5 pr-8 rounded-xl bg-white/85 hover:bg-white text-[#1A1A1A] font-bold text-xs appearance-none cursor-pointer outline-none border border-[#1A1A1A]/10 shadow-2xs"
+        >
+          <option value="" disabled>
+            Select an outlet...
+          </option>
+          {frontDeskOutlets.map((o) => (
+            <option key={o.id} value={o.slug} className="bg-white text-[#1A1A1A]">
+              {o.name}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="w-4 h-4 text-[#1A1A1A] absolute right-2.5 top-2.5 pointer-events-none" />
+      </div>
+    </div>
+  );
+
   return (
     <SidebarShell
       brandSubLabel="Front-Desk"
@@ -164,9 +218,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       onSelectNav={(id) => setActiveTab(id as any)}
       user={adminUser}
       onOpenProfile={onOpenProfile}
-      onOpenExport={onOpenExport}
       onLogout={onLogout}
+      sidebarExtra={sidebarOutletSelector}
     >
+      {bannerNotice && (
+        <div className="mb-4 p-3 rounded-xl bg-[#FFE27A] border border-[#1A1A1A]/15 text-[#1A1A1A] text-xs font-semibold flex items-center justify-between gap-3">
+          <span>{bannerNotice}</span>
+          <button
+            type="button"
+            onClick={() => setBannerNotice(null)}
+            className="text-xs font-bold opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* TAB 1: DASHBOARD */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
@@ -176,28 +243,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Front-Desk dashboard
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">All outlets · {todayFormatted}</p>
-            </div>
-
-            {/* Front-Desk Outlets Dropdown (Rev 001) */}
-            <div className="relative">
-              <select
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) onSelectOutlet(e.target.value as OutletSlug);
-                }}
-                aria-label="Outlets"
-                className="px-4 py-2.5 pr-9 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold text-xs appearance-none cursor-pointer outline-none min-h-[42px]"
-              >
-                <option value="" disabled>
-                  Outlets
-                </option>
-                {frontDeskOutlets.map((o) => (
-                  <option key={o.id} value={o.slug} className="bg-white text-[#1A1A1A]">
-                    {o.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-[#1A1A1A] absolute right-3 top-3 pointer-events-none" />
             </div>
           </div>
 
@@ -210,19 +255,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               isHighlight={true}
             />
             <StatTile
-              label="Pending approvals"
+              label="Pending accounts"
               value={pendingUsers.length}
-              sub="New staff accounts"
+              sub="New staff approvals"
             />
             <StatTile
-              label="Void requests"
-              value={pendingVoids.length}
-              sub="Awaiting decision"
+              label="Pending balances"
+              value={`₱${pendingBalancesTotal.toLocaleString()}`}
+              sub={`${pendingCount} open tickets`}
             />
             <StatTile
-              label="Cash to confirm"
-              value={`₱${pendingCashDeposits.toLocaleString()}`}
-              sub={`${pendingCashItems.length} deposits`}
+              label="Managed outlets"
+              value={frontDeskOutlets.length}
+              sub="Use sidebar selector"
             />
           </div>
 
@@ -297,30 +342,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <div className="inline-flex items-center gap-1">
                           <button
                             type="button"
-                            onClick={() => {
-                              setAdminEditingTx(tx);
-                              setEditAmount(tx.transactionAmount);
-                              setEditDiscount(tx.discount);
-                              setEditStatus(tx.transactionStatus);
-                              setEditCustomer(tx.customerName);
-                            }}
-                            className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
-                            title="Direct admin edit (FR85)"
+                            onClick={() => setDetailTx(tx)}
+                            className="p-1.5 rounded-lg text-gray-500 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
+                            title="View transaction details"
                           >
-                            <Edit3 className="w-3.5 h-3.5" />
+                            <Eye className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (confirm(`Delete ${tx.transactionID} permanently without approval (FR87)?`)) {
-                                store.adminDirectDelete(tx.transactionID);
-                              }
-                            }}
-                            className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
-                            title="Direct admin delete (FR87)"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {tx.transactionStatus !== 'void' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingTx(tx);
+                                setEditAmount(tx.transactionAmount);
+                                setEditDiscount(tx.discount);
+                                setEditStatus(tx.transactionStatus);
+                                setEditCustomer(tx.customerName);
+                                setEditNote('');
+                              }}
+                              className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
+                              title="Request transaction edit (Accountant approval)"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {tx.transactionStatus !== 'void' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setVoidingTx(tx);
+                                setVoidReason('Customer cancelled');
+                                setVoidNote('');
+                              }}
+                              className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
+                              title="Request void (Accountant approval)"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -390,7 +448,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* All Registered Staff Directory */}
           <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 text-sm font-bold text-[#1A1A1A]">
-              Approved & decided accounts
+              Approved &amp; decided accounts
             </div>
             <div className="divide-y divide-gray-100">
               {users
@@ -420,163 +478,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB 3: REQUESTS (Void requests, Accountant Edit requests, Cash confirmations) */}
-      {activeTab === 'requests' && (
-        <div className="space-y-6">
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-[#1A1A1A]">Requests</h1>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Void requests and cash confirmations
-            </p>
-          </div>
-
-          {/* Void Requests */}
-          <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100 text-sm font-bold text-[#1A1A1A]">
-              Void requests
-            </div>
-            {voidRequests.length === 0 ? (
-              <div className="py-8 text-center text-xs text-gray-400">No void requests.</div>
-            ) : (
-              <div className="divide-y divide-gray-100">
-                {voidRequests.map((v) => (
-                  <div
-                    key={v.id}
-                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 flex-1 items-center">
-                      <span className="font-bold font-mono text-[#1A1A1A]">{v.transactionId}</span>
-                      <span className="text-gray-600">{v.requestedByName}</span>
-                      <span className="text-gray-600 truncate">{v.reason}</span>
-                      <span className="font-bold text-[#1A1A1A] tabular-nums">
-                        ₱{v.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                    {v.status === 'pending' ? (
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => store.decideVoidRequest(v.id, 'rejected', adminUser.name)}
-                          className="px-4 py-2 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
-                        >
-                          Reject
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => store.decideVoidRequest(v.id, 'approved', adminUser.name)}
-                          className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
-                        >
-                          Approve void
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs font-bold capitalize text-gray-500">
-                        {v.status} · {v.decidedBy}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Accountant Modification Requests (FR92) */}
-          {editRequests.length > 0 && (
-            <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100 text-sm font-bold text-[#1A1A1A]">
-                Accountant edit requests (FR92)
-              </div>
-              <div className="divide-y divide-gray-100">
-                {editRequests.map((er) => (
-                  <div
-                    key={er.id}
-                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                  >
-                    <div>
-                      <div className="font-bold font-mono text-[#1A1A1A]">
-                        {er.transactionId} · New status: {er.changes.transactionStatus} · ₱
-                        {(er.changes.transactionAmount ?? 0).toLocaleString()}
-                      </div>
-                      <div className="text-gray-500 mt-0.5">
-                        {er.requestedByName} — {er.note}
-                      </div>
-                    </div>
-                    {er.status === 'pending' ? (
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => store.decideEditRequest(er.id, 'rejected', adminUser.name)}
-                          className="px-4 py-2 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
-                        >
-                          Reject
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => store.decideEditRequest(er.id, 'approved', adminUser.name)}
-                          className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
-                        >
-                          Approve edit
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs font-bold capitalize text-gray-500">
-                        {er.status}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Cash Payments to Confirm (FR83) */}
-          <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100 text-sm font-bold text-[#1A1A1A]">
-              Cash payments to confirm
-            </div>
-            {cashConfirmations.length === 0 ? (
-              <div className="py-8 text-center text-xs text-gray-400">No cash confirmations queued.</div>
-            ) : (
-              <div className="divide-y divide-gray-100">
-                {cashConfirmations.map((c) => (
-                  <div
-                    key={c.id}
-                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 flex-1 items-center">
-                      <span className="font-bold font-mono text-[#1A1A1A]">
-                        {c.transactionId} · {c.customerName}
-                      </span>
-                      <span className="text-gray-600">
-                        {c.outletName}
-                        {c.cashReceivedBy ? ` · Rx by ${c.cashReceivedBy}` : ''}
-                      </span>
-                      <span className="font-bold text-[#1A1A1A] tabular-nums">
-                        ₱{c.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                    {c.status === 'pending_audit' ? (
-                      <button
-                        type="button"
-                        onClick={() => store.approveCashConfirmation(c.id, adminUser.name)}
-                        className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer shrink-0"
-                      >
-                        Confirm cash
-                      </button>
-                    ) : (
-                      <span className="px-3 py-1 rounded-full bg-[#FFE27A] text-[#1A1A1A] font-bold text-[11px] shrink-0">
-                        Confirmed
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 4: OUTLETS AND SERVICES (FR88) */}
+      {/* TAB 3: OUTLETS AND SERVICES (FR88 - Use template button removed per Rev 002) */}
       {activeTab === 'outlets' && (
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -585,20 +487,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Outlets and services
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                Add outlets and services from scratch or from a template
+                Add outlets and services across Cafe Lupe
               </p>
             </div>
             <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setNewOutletTemplate('pickleball');
-                  setShowAddOutlet(true);
-                }}
-                className="px-4 py-2.5 rounded-xl bg-white border border-gray-300 text-xs font-semibold text-[#1A1A1A] hover:bg-gray-50 cursor-pointer min-h-[42px]"
-              >
-                Use template
-              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -646,17 +538,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Admin Direct Edit Modal (FR85) */}
-      {adminEditingTx && (
+      {/* Front-Desk Edit Request Modal (Requires Accountant Approval per Rev 002) */}
+      {editingTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl">
             <h3 className="text-base font-extrabold text-[#1A1A1A]">
-              Edit transaction ({adminEditingTx.transactionID})
+              Request transaction edit ({editingTx.transactionID})
             </h3>
             <p className="text-xs text-gray-500 mt-0.5 mb-4">
-              Admin direct modification without approval (FR85)
+              Sent to Accountant for approval before changes apply
             </p>
-            <form onSubmit={handleSaveAdminEdit} className="space-y-3 text-xs">
+            <form onSubmit={handleSubmitFrontDeskEditRequest} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-gray-600 mb-1">Customer</label>
                 <input
@@ -693,7 +585,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               </div>
               <div>
-                <label className="block font-semibold text-gray-600 mb-1">Status</label>
+                <label className="block font-semibold text-gray-600 mb-1">Target status</label>
                 <select
                   value={editStatus}
                   onChange={(e: any) => setEditStatus(e.target.value)}
@@ -704,11 +596,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <option value="void">Void</option>
                 </select>
               </div>
+              <div>
+                <label className="block font-semibold text-gray-600 mb-1">Audit note *</label>
+                <textarea
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  placeholder="Explain the adjustment for Accountant approval"
+                  rows={2}
+                  className="w-full p-2.5 rounded-xl border border-gray-300"
+                  required
+                />
+              </div>
               <div className="grid grid-cols-2 gap-2.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setAdminEditingTx(null)}
-                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold"
+                  onClick={() => setEditingTx(null)}
+                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -716,7 +619,68 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   type="submit"
                   className="py-2.5 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
                 >
-                  Save changes
+                  Submit request
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Front-Desk Void Request Modal (Requires Accountant Approval per Rev 002) */}
+      {voidingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl">
+            <h3 className="text-base font-extrabold text-[#1A1A1A]">Request void</h3>
+            <div className="mt-3 p-3.5 rounded-xl bg-[#FFE27A] text-[#1A1A1A] text-xs">
+              <div className="font-bold font-mono">
+                {voidingTx.transactionID} · {voidingTx.customerName}
+              </div>
+              <div className="text-[#1A1A1A]/80 mt-0.5">
+                {voidingTx.outletName} · ₱{voidingTx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+            <form onSubmit={handleSubmitFrontDeskVoidRequest} className="mt-4 space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-gray-600 mb-1">Reason *</label>
+                <select
+                  value={voidReason}
+                  onChange={(e) => setVoidReason(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-300 bg-white"
+                  required
+                >
+                  <option value="Customer cancelled">Customer cancelled</option>
+                  <option value="Duplicate entry">Duplicate entry</option>
+                  <option value="Incorrect service selected">Incorrect service selected</option>
+                  <option value="Other adjustment">Other adjustment</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-600 mb-1">Notes (optional)</label>
+                <textarea
+                  value={voidNote}
+                  onChange={(e) => setVoidNote(e.target.value)}
+                  placeholder="Add a short note for the Accountant"
+                  rows={2}
+                  className="w-full p-2.5 rounded-xl border border-gray-300"
+                />
+              </div>
+              <p className="text-[11px] text-gray-500">
+                Sent to Accountant for approval. Transactions remain recorded until approved.
+              </p>
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setVoidingTx(null)}
+                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="py-2.5 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
+                >
+                  Send request
                 </button>
               </div>
             </form>
@@ -760,14 +724,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   <option value="generic">From scratch (generic_transactions)</option>
                   <option value="pickleball">Hourly court rental template</option>
-                  <option value="fnb">F&B POS template</option>
+                  <option value="fnb">F&amp;B POS template</option>
                 </select>
               </div>
               <div className="grid grid-cols-2 gap-2.5 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowAddOutlet(false)}
-                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold"
+                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -797,7 +761,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setServiceModalOutlet(null)}
-                className="text-gray-400 hover:text-[#1A1A1A]"
+                className="text-gray-400 hover:text-[#1A1A1A] cursor-pointer"
               >
                 ✕
               </button>
@@ -843,6 +807,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Transaction Details Modal (Eye icon) */}
+      {detailTx && (
+        <TransactionDetailsModal transaction={detailTx} onClose={() => setDetailTx(null)} />
       )}
     </SidebarShell>
   );

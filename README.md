@@ -1,47 +1,42 @@
 # Cafe Lupe Centralized Sales Report & Transaction Gateway
 
-A responsive web application for **Cafe Lupe** that centralizes transaction entry, real-time pricing, session countdown tracking, **QR Ph** payment validation, **Cash** settlement confirmation, and cross-outlet financial reporting into a unified relational data model — complete with exportable **MySQL DDL** and **PHP PDO** gateway code.
+A full-stack responsive web application for **Cafe Lupe** that centralizes transaction entry, real-time pricing, session countdown tracking, **QR Ph** payment validation, two-step **Down Payment** settlements, Accountant financial governance, and **server-side Gemini AI** financial auditing & bank reconciliation — backed by a normalized relational data model and Express API server.
 
 ---
 
-## Key Features
+## Key Features (Revision 002)
 
 - **Single Unified Login & Role Routing**
   - Routes staff directly to their assigned portal based on credentials: **Front-Desk (Admin)**, **Accountant**, **Gym & Combat Training**, or **Restaurant / F&B POS**.
-  - Includes new staff registration with an approval status checker by email and Front-Desk account approval/rejection controls.
-- **Front-Desk Multi-Outlet Control**
-  - Front-Desk (Admin) manages all **9 merged outlets** (`Pickleball Courts`, `Hostel`, `Swimming Pool`, `KTV Rooms`, `Billiards`, `Table Tennis`, `Parking Lot`, `Events & Location Rentals`) directly via the persistent **Outlets** dropdown menu.
-  - Full administrative privileges for account approvals, void/edit request decisions, cash deposit confirmations, direct transaction edits/deletions, and dynamic outlet/service management.
-- **Outlet-Specific Forms & Real-Time Pricing**
-  - **Billiards:** Place selector (`Without Aircon` ₱200/hr, `With Aircon` ₱400/hr), hours, and session countdown timer.
-  - **Pickleball Courts:** Court (`Al Fresco` / `Indoor`), `150 × pax × hours` plus paddle (₱100) and ball (₱50) rentals, and countdown timer.
-  - **Table Tennis:** Tables 1–3 at ₱250/hr with countdown timer.
-  - **KTV Rooms:** Rooms 1–4, `Custom Hourly` (₱1,000/hr) or consumable packages (`KTV 1 & 2` +₱5,000, `KTV Suite 4` +₱15,000), hours, pax, and countdown timer.
-  - **Hostel:** Room types (`2 Single Bed` ₱1,680, `Queen Size Bed` ₱2,800, `King Size Bed` ₱3,136, `Suite Room - Overlooking` ₱4,480), check-in/out night calculation (12% VAT-inclusive, no service charge), Agoda/Traveloka/Walk-in booking sources, and non-billable amenities log.
-  - **Swimming Pool:** Walk-in rates (₱300 adult / ₱150 child) vs. complimentary Hotel Guest access.
-  - **Parking Lot:** `Car`, `Van`, `Truck` (4 wheels · ₱50), `Motorcycle`, `Tricycle` (2 wheels · ₱30), `Others` (custom vehicle name & wheel count), Day/Night/Overnight type, and free checked-in guest tickets (`₱0.00`).
-  - **Gym & Combat Training:** Cascaded selector covering Annual Membership (₱1,600), Monthly Packages (Unlimited ₱3,500, 12-Session Boxing ₱2,000, 12-Session Muay Thai ₱5,000), Per-Session Training (Boxing/Muay Thai across Member, Non-Member, Student rates), and Self-Train Sessions with inclusion summaries.
-  - **Events & Location Rentals:** Venue packages, event dates, headcounts, and space reservations.
-- **Live Session Timers, Extensions & Balance Settlement**
-  - Live `HH:MM:SS` countdown timers in transaction tables and detail views for Billiards, Pickleball, Table Tennis, and KTV Rooms.
-  - Expiry notification banner with **Acknowledge** and **Extend** actions (remembers hourly rate and recalculates payable balance).
-  - **Pay Balance** workflow for pending/down-payment transactions supporting Cash confirmation (`Confirm Payment` / `Cancel`) and simulated **QR Ph** scanning.
-- **F&B POS Terminal & Kitchen Tickets**
-  - Dedicated POS ordering interface featuring the full **Cafe Lupe Menu** and **Drinks** catalog with category filters, inline option/variant selection, instant sync to the central database, and printable kitchen receipts.
-- **Universal Discount & Payment Rules**
-  - **Yes / No** 20% SC/PWD VAT-exempt discount calculation: `Final Price = (Selling Price ÷ 1.12) × 0.80`.
-  - **Full Payment** and **Down Payment** arrangements with auto-calculated `balanceDue` and **Payment cash received by** staff tracking.
-- **Accountant Analytics & Audit Controls**
-  - Period-filtered sales dashboards (`day`, `week`, `month`, `year`), stacked paid/pending outlet charts, listed summaries, and admin-approved edit/void request workflows.
-- **PHP & MySQL Code Generator**
-  - Built-in **PHP / SQL Export** modal generating the normalized MySQL DDL (`transactions` master table + 10 `*_transactions` child tables) and PHP PDO service code.
+  - Supports new staff registration with email approval status lookup and Front-Desk account approval controls.
+- **Two-Step Down Payment Billing & Mode Switching**
+  - Both **Cash** and **QR Ph** `Down Payment` arrangements require explicit initial down-payment collection (`amountPaid = 0` initially), keeping the transaction `pending` with only the remaining balance left payable.
+  - Cancelling or refusing an initial down payment immediately voids the transaction.
+  - **Pay Balance** supports switching payment modes (`Cash` or `QR Ph`) independently of the initial payment mode, recorded per installment in `payment_installments` and displayed individually with explicit `transactionDateTime` inside the universal **Transaction Details** (`Eye` icon) modal across every interface.
+- **Front-Desk Multi-Outlet Control & Timed Supervision**
+  - Left-sidebar **Outlet Selector** (separated below `Outlets` with a horizontal divider) manages all **9 merged outlets** (`Pickleball Courts`, `Hostel`, `Swimming Pool`, `KTV Rooms`, `Billiards`, `Table Tennis`, `Parking Lot`, `Events & Location Rentals`).
+  - **Timed Outlets** (`Pickleball`, `Billiards`, `Table Tennis`, `KTV Rooms`) feature live countdown timers, an early checkout **Stop** button, hour **Extensions**, and an **unavoidable blocking overlay** upon timer expiration requiring acknowledgment.
+  - Front-Desk edit and void requests route cleanly to the **Accountant** for approval.
+- **F&B POS Terminal & Revised SC/PWD Formula**
+  - Strictly upfront **Full Payment** ordering across the full **Cafe Lupe Menu** and **Drinks** catalog with kitchen ticket printing.
+  - Selecting **Yes** on the SC/PWD discount reveals **Total Pax** and **Number of Valid SC & PWD IDs**, applying `Discount = ((Total Bill / 1.12) / Total Pax × Valid IDs) × 0.20`.
+- **Accountant Governance & 5 Server-Side Gemini AI Tools**
+  - **Approvals Hub:** Migrated **Cash Payments to Confirm**, **Edit Requests** (including Front-Desk submissions), and **Void Requests** queues; direct Accountant edits apply immediately without secondary approval.
+  - **Enhanced History:** Filter by `Cash` / `QR Ph` payment channels, multi-attribute search, and `Eye` details inspection on every row.
+  - **AI Analytics & Auditing (`/api/ai/*` via Express + `@google/genai`):**
+    1. **Daily Cash Deposit Validation:** Pick a date, upload a bank deposit slip image, extract JSON fields via AI OCR, and compare against daily Cash totals.
+    2. **Financial Analysis Dashboard:** Interactive period/channel/outlet analytics with an AI executive brief and downloadable **PDF Financial Report** (`jsPDF`).
+    3. **Forecasting:** Per-outlet proposed business action plans combining historical revenue and external weather/event context.
+    4. **Decision Analysis System:** Interactive AI Business Advisor chat anchored to live metrics and forecasts.
+    5. **Financial Reconciliation:** Per-outlet date-range reconciliation uploading bank statement images to flag `matched` vs. `conflict` entries.
 
 ---
 
 ## Tech Stack
 
-- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React
-- **State & Persistence:** Local relational store (`localStorage` persistence with concurrency edit locks) + exportable PHP 8+ / MySQL schema & PDO service
+- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React, `jsPDF`
+- **Backend Proxy:** Node.js, Express 5 (`tsx server.ts`), `@google/genai` (`GEMINI_API_KEY` kept strictly server-side)
+- **Persistence:** Normalized local relational store (`localStorage` + concurrency edit locks) paired with developer MySQL DDL & PHP PDO artifacts in `src/db/store.ts` (hidden from end-user UI)
 
 ---
 
@@ -50,19 +45,20 @@ A responsive web application for **Cafe Lupe** that centralizes transaction entr
 | Portal / Role | Email | Password |
 | :--- | :--- | :--- |
 | **Front-Desk (Admin — All 9 Merged Outlets)** | `admin@cafelupe.com` | `password123` |
-| **Accountant** | `accountant@cafelupe.com` | `password123` |
+| **Accountant (Approvals + AI Suite)** | `accountant@cafelupe.com` | `password123` |
 | **Gym & Combat Training** | `gym@cafelupe.com` | `password123` |
 | **Restaurant / F&B POS** | `fnb@cafelupe.com` | `password123` |
 
-*Sample pending staff registration (for testing Front-Desk approvals): `trainee@cafelupe.com` / `password123`*
+*Sample pending staff registration: `trainee@cafelupe.com` / `password123`*
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- Node.js 20+ (or Bun)
+- Node.js 20+
 - npm
+- `GEMINI_API_KEY` configured in your environment or `.env` (for Accountant AI features)
 
 ### Local Development
 
@@ -70,7 +66,7 @@ A responsive web application for **Cafe Lupe** that centralizes transaction entr
 # 1. Install dependencies
 npm install
 
-# 2. Start the development server (runs on http://localhost:3000)
+# 2. Start the full-stack Express + Vite dev server (http://localhost:3000)
 npm run dev
 ```
 
@@ -83,52 +79,52 @@ npm run lint
 # Build production bundle into dist/
 npm run build
 
-# Preview production build locally
-npm run preview
+# Run production server
+npm start
 ```
 
 ---
 
 ## Deploying to Vercel
 
-This project is a Vite React single-page application ready for zero-config deployment on **Vercel**:
-
-- **Framework Preset:** `Vite`
-- **Build Command:** `npm run build`
-- **Output Directory:** `dist`
-- **Node / Tooling:** Configured with `esbuild@0.28.0` in `devDependencies` for Vercel build compatibility.
+This project pins `esbuild@0.28.0` in `devDependencies` for Vercel build compatibility (`npm run build`, output directory `dist`). When deploying full-stack `/api/ai/*` routes, configure `GEMINI_API_KEY` as a server environment variable.
 
 ---
 
 ## Project Structure
 
 ```text
+server.ts                                  # Express server (port 3000) + Vite middleware + /api/ai/* Gemini proxy
 src/
-├── App.tsx                                # Root router by role and Front-Desk outlet switcher
+├── App.tsx                                # Role router and sidebar Front-Desk Outlet Selector
 ├── index.css                              # Tailwind CSS v4 setup & design tokens
+├── utils/
+│   └── pdfReport.ts                       # jsPDF downloadable Financial Analysis report generator
 ├── types/
-│   └── index.ts                           # Master, outlet child table, and workflow TypeScript interfaces
+│   └── index.ts                           # Master, outlet child table, installment, and AI audit interfaces
 ├── db/
-│   ├── initialData.ts                     # Seed users, outlets, F&B menu catalog, and sample records
-│   └── store.ts                           # Relational store, timers, locks, QR/Cash handlers, PHP/SQL exporter
+│   ├── initialData.ts                     # Seed users, outlets, F&B menu catalog, and sample installments
+│   └── store.ts                           # Relational store, two-step down payments, timers, locks, MySQL/PHP code
 └── components/
     ├── auth/
     │   ├── LoginView.tsx                  # Unified sign-in, registration, and email approval lookup
     │   └── PendingApprovalView.tsx        # Pending account status screen
     ├── admin/
-    │   └── AdminDashboard.tsx             # Front-Desk overview, Outlets menu, Approvals, Requests, Outlets setup
+    │   └── AdminDashboard.tsx             # Front-Desk overview, sidebar Outlet Selector, Approvals, Outlets setup
     ├── accountant/
-    │   └── AccountantDashboard.tsx        # Period sales charts, listed summaries, edit/void request flows
+    │   ├── AccountantDashboard.tsx        # Summary, History (Cash/QRPh + search), Approvals, 5 AI sidebar routes
+    │   └── AccountantAiViews.tsx          # Deposit Validation, Financial Analysis, Forecasting, Advisor, Recon
     ├── outlets/
-    │   ├── OutletWorkspace.tsx            # Outlet dashboard, live timers, Pay Balance, Extend, details modal
+    │   ├── OutletWorkspace.tsx            # Outlet dashboard, Stop timer, blocking expiry overlay, Pay Balance
     │   ├── OutletTransactionForm.tsx      # Outlet-specific transaction forms with real-time calculation
-    │   └── PosTerminal.tsx                # F&B POS terminal with variant picker and kitchen receipt
+    │   └── PosTerminal.tsx                # F&B POS terminal (Full Payment, SC/PWD Pax & Valid ID formula)
     └── common/
-        ├── SidebarShell.tsx               # Responsive desktop rail + mobile navigation drawer
+        ├── SidebarShell.tsx               # Responsive desktop rail + mobile drawer with dividers
+        ├── TransactionDetailsModal.tsx    # Universal Eye modal (date/time, split payment modes, child data)
+        ├── PaymentWorkflowModals.tsx      # Initial Cash Down Payment notice/void & Pay Balance mode switcher
         ├── StatTile.tsx                   # KPI stat card
         ├── StatusChip.tsx                 # Paid / Pending / Void status badge
-        ├── QrPhModal.tsx                  # Interactive QR Ph payment validation prototype
+        ├── QrPhModal.tsx                  # Interactive QR Ph modal supporting two-step down payments & void
         ├── ReceiptModal.tsx               # Printable kitchen & order ticket modal
-        ├── ProfileModal.tsx               # Active user profile details
-        └── PhpSqlExportModal.tsx          # Exportable MySQL DDL & PHP PDO code viewer
+        └── ProfileModal.tsx               # Active user profile details
 ```

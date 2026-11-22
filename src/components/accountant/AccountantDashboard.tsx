@@ -1,17 +1,54 @@
 import React, { useState, useEffect } from 'react';
-import { User, MasterTransaction, TransactionStatus } from '../../types';
+import {
+  User,
+  MasterTransaction,
+  TransactionStatus,
+  CashConfirmation,
+  EditRequest,
+  VoidRequest,
+} from '../../types';
 import { store } from '../../db/store';
 import { SidebarShell, SidebarNavItem } from '../common/SidebarShell';
 import { StatTile } from '../common/StatTile';
 import { StatusChip } from '../common/StatusChip';
-import { BarChart3, Clock, Edit3, XCircle } from 'lucide-react';
+import { TransactionDetailsModal } from '../common/TransactionDetailsModal';
+import {
+  DepositValidationView,
+  FinancialAnalysisView,
+  ForecastingView,
+  DecisionAdvisorView,
+  FinancialReconciliationView,
+  ForecastResult,
+} from './AccountantAiViews';
+import {
+  BarChart3,
+  Clock,
+  CheckSquare,
+  Edit3,
+  Eye,
+  Search,
+  FileCheck2,
+  LineChart,
+  TrendingUp,
+  Bot,
+  Scale,
+} from 'lucide-react';
 
 interface AccountantDashboardProps {
   user: User;
   onOpenProfile: () => void;
-  onOpenExport: () => void;
   onLogout: () => void;
 }
+
+type AccountantTab =
+  | 'summary'
+  | 'history'
+  | 'approvals'
+  | 'deposit'
+  | 'analysis'
+  | 'forecasting'
+  | 'advisor'
+  | 'reconciliation';
 
 const SHORT_OUTLET_LABELS: Record<string, string> = {
   pickleball: 'Pickle',
@@ -29,28 +66,39 @@ const SHORT_OUTLET_LABELS: Record<string, string> = {
 export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
   user,
   onOpenProfile,
-  onOpenExport,
   onLogout,
 }) => {
-  const [activeTab, setActiveTab] = useState<'summary' | 'history'>('summary');
+  const [activeTab, setActiveTab] = useState<AccountantTab>('summary');
   const [timeFilter, setTimeFilter] = useState<'day' | 'week' | 'month' | 'year'>('day');
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'Cash' | 'QRPh'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
+
   const [transactions, setTransactions] = useState<MasterTransaction[]>([]);
+  const [cashConfirmations, setCashConfirmations] = useState<CashConfirmation[]>([]);
+  const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
+  const [voidRequests, setVoidRequests] = useState<VoidRequest[]>([]);
 
-  // Accountant Edit Request Modal (FR92)
+  // Details Modal (Eye)
+  const [detailTx, setDetailTx] = useState<MasterTransaction | null>(null);
+
+  // Accountant Direct Edit Modal (No approval required per Revision 002)
   const [editingTx, setEditingTx] = useState<MasterTransaction | null>(null);
-  const [newStatus, setNewStatus] = useState<TransactionStatus>('paid');
-  const [newAmount, setNewAmount] = useState<number>(0);
-  const [editNote, setEditNote] = useState<string>('');
+  const [editCustomer, setEditCustomer] = useState('');
+  const [editAmount, setEditAmount] = useState<number>(0);
+  const [editDiscount, setEditDiscount] = useState<number>(0);
+  const [editStatus, setEditStatus] = useState<TransactionStatus>('paid');
+  const [bannerNotice, setBannerNotice] = useState<string | null>(null);
 
-  // Accountant Void Request Modal (FR93)
-  const [voidingTx, setVoidingTx] = useState<MasterTransaction | null>(null);
-  const [voidReason, setVoidReason] = useState<string>('Customer cancelled');
-  const [voidNote, setVoidNote] = useState<string>('');
+  // Shared latest AI forecast so Decision Advisor has forecast context
+  const [latestForecast, setLatestForecast] = useState<ForecastResult | null>(null);
 
   const loadData = () => {
     setTransactions(store.getTransactions());
+    setCashConfirmations(store.getCashConfirmations());
+    setEditRequests(store.getEditRequests());
+    setVoidRequests(store.getVoidRequests());
   };
 
   useEffect(() => {
@@ -58,6 +106,13 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
     const unsub = store.subscribe(() => loadData());
     return () => unsub();
   }, []);
+
+  const showNotice = (msg: string) => {
+    setBannerNotice(msg);
+    window.setTimeout(() => {
+      setBannerNotice((prev) => (prev === msg ? null : prev));
+    }, 4500);
+  };
 
   const now = Date.now();
   const filteredByTime = transactions.filter((t) => {
@@ -76,6 +131,12 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
   const pendingSales = pendingItems.reduce((acc, t) => acc + t.totalAmount, 0);
   const totalSales = paidSales + pendingSales;
 
+  const pendingCashItems = cashConfirmations.filter((c) => c.status === 'pending_audit');
+  const pendingEdits = editRequests.filter((e) => e.status === 'pending');
+  const pendingVoids = voidRequests.filter((v) => v.status === 'pending');
+  const totalPendingApprovals =
+    pendingCashItems.length + pendingEdits.length + pendingVoids.length;
+
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -83,7 +144,6 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
     year: 'numeric',
   });
 
-  // Outlet-by-outlet totals across all 10 core outlets
   const allOutlets = store.getOutlets();
   const outletBars = allOutlets.map((o) => {
     const oTx = filteredByTime.filter((t) => t.outletSlug === o.slug && t.transactionStatus !== 'void');
@@ -105,67 +165,82 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
 
   const maxOutletVal = Math.max(1, ...outletBars.map((b) => b.total));
 
-  const historyRows = transactions.filter(
-    (t) => statusFilter === 'all' || t.transactionStatus === statusFilter
-  );
+  const historyRows = transactions.filter((t) => {
+    const matchesStatus = statusFilter === 'all' || t.transactionStatus === statusFilter;
+    const matchesChannel =
+      channelFilter === 'all' ||
+      t.paymentChannel === channelFilter ||
+      t.initialPaymentMode === channelFilter ||
+      t.balancePaymentMode === channelFilter;
+
+    const q = searchQuery.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      t.transactionID.toLowerCase().includes(q) ||
+      t.customerName.toLowerCase().includes(q) ||
+      t.outletName.toLowerCase().includes(q) ||
+      t.outletService.toLowerCase().includes(q) ||
+      t.employeeHandler.toLowerCase().includes(q) ||
+      (t.cashReceivedBy || '').toLowerCase().includes(q) ||
+      t.paymentChannel.toLowerCase().includes(q) ||
+      t.paymentArrangement.toLowerCase().includes(q) ||
+      t.transactionStatus.toLowerCase().includes(q) ||
+      String(t.totalAmount).includes(q);
+
+    return matchesStatus && matchesChannel && matchesSearch;
+  });
 
   const navItems: SidebarNavItem[] = [
     { id: 'summary', label: 'Summary', icon: BarChart3 },
     { id: 'history', label: 'History', icon: Clock },
+    {
+      id: 'approvals',
+      label: 'Approvals',
+      icon: CheckSquare,
+      badge: totalPendingApprovals,
+    },
+    {
+      id: 'deposit',
+      label: 'Deposit Validation',
+      icon: FileCheck2,
+      dividerBefore: true,
+      sectionLabel: 'AI Suite',
+    },
+    { id: 'analysis', label: 'Financial Analysis', icon: LineChart },
+    { id: 'forecasting', label: 'Forecasting', icon: TrendingUp },
+    { id: 'advisor', label: 'Decision Advisor', icon: Bot },
+    { id: 'reconciliation', label: 'Financial Recon', icon: Scale },
   ];
 
-  const handleOpenEditFor = (tx?: MasterTransaction) => {
+  const handleOpenDirectEdit = (tx?: MasterTransaction) => {
     const target =
       tx ||
       (selectedTxId && transactions.find((t) => t.transactionID === selectedTxId)) ||
       transactions[0];
     if (!target) return;
     setEditingTx(target);
-    setNewStatus(target.transactionStatus);
-    setNewAmount(target.transactionAmount);
-    setEditNote('');
+    setEditCustomer(target.customerName);
+    setEditAmount(target.transactionAmount);
+    setEditDiscount(target.discount);
+    setEditStatus(target.transactionStatus);
   };
 
-  const handleOpenVoidFor = (tx?: MasterTransaction) => {
-    const target =
-      tx ||
-      (selectedTxId && transactions.find((t) => t.transactionID === selectedTxId)) ||
-      transactions.find((t) => t.transactionStatus !== 'void');
-    if (!target) return;
-    setVoidingTx(target);
-    setVoidReason('Customer cancelled');
-    setVoidNote('');
-  };
-
-  const handleSubmitEditRequest = (e: React.FormEvent) => {
+  const handleSaveDirectEdit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingTx || !editNote) return;
-    store.createEditRequest(
-      editingTx.transactionID,
-      user.id,
-      user.name,
-      {
-        transactionStatus: newStatus,
-        transactionAmount: newAmount,
-        totalAmount: Math.max(0, newAmount - editingTx.discount),
-      },
-      editNote
-    );
+    if (!editingTx) return;
+    store.accountantDirectUpdate(editingTx.transactionID, {
+      customerName: editCustomer,
+      transactionAmount: editAmount,
+      discount: editDiscount,
+      transactionStatus: editStatus,
+    });
+    showNotice(`Updated ${editingTx.transactionID} directly.`);
     setEditingTx(null);
   };
 
-  const handleSubmitVoidRequest = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!voidingTx || !voidReason) return;
-    store.createVoidRequest(
-      voidingTx.transactionID,
-      user.id,
-      user.name,
-      'accountant',
-      voidReason,
-      voidNote
-    );
-    setVoidingTx(null);
+  const inspectTransactionById = (txId: string) => {
+    const found = store.getTransactionById(txId);
+    if (found) setDetailTx(found);
   };
 
   return (
@@ -173,15 +248,26 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
       brandSubLabel="Accountant"
       navItems={navItems}
       activeNavId={activeTab}
-      onSelectNav={(id) => setActiveTab(id as any)}
+      onSelectNav={(id) => setActiveTab(id as AccountantTab)}
       user={user}
       onOpenProfile={onOpenProfile}
-      onOpenExport={onOpenExport}
       onLogout={onLogout}
     >
-      {activeTab === 'summary' ? (
+      {bannerNotice && (
+        <div className="mb-4 p-3 rounded-xl bg-[#FFE27A] border border-[#1A1A1A]/15 text-[#1A1A1A] text-xs font-semibold flex items-center justify-between gap-3">
+          <span>{bannerNotice}</span>
+          <button
+            type="button"
+            onClick={() => setBannerNotice(null)}
+            className="text-xs font-bold opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'summary' && (
         <div className="space-y-6">
-          {/* Header with Period Segmented Control (FR91) */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-extrabold tracking-tight text-[#1A1A1A]">
@@ -211,7 +297,6 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
             </div>
           </div>
 
-          {/* 3-Tile KPI Row */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <StatTile
               label="Total sales"
@@ -231,9 +316,7 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
             />
           </div>
 
-          {/* 2-Column Sales by Outlet Bar Chart + Listed Summary (matching PDF) */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-            {/* Bar Chart Card */}
             <div className="lg:col-span-7 bg-white rounded-2xl p-6 border border-gray-200/90 flex flex-col justify-between">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-sm font-bold text-[#1A1A1A]">Sales by outlet</h2>
@@ -272,9 +355,7 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                             style={{ height: `${Math.max(4, paidPct)}%` }}
                           />
                         )}
-                        {bar.total === 0 && (
-                          <div className="w-full bg-gray-100 rounded-t-sm h-1" />
-                        )}
+                        {bar.total === 0 && <div className="w-full bg-gray-100 rounded-t-sm h-1" />}
                       </div>
                     </div>
                   );
@@ -293,7 +374,6 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
               </div>
             </div>
 
-            {/* Listed Summary Card */}
             <div className="lg:col-span-5 bg-white rounded-2xl p-6 border border-gray-200/90">
               <h2 className="text-sm font-bold text-[#1A1A1A] mb-4">Listed summary</h2>
               <div className="divide-y divide-gray-100 text-xs">
@@ -309,8 +389,9 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
             </div>
           </div>
         </div>
-      ) : (
-        /* TAB 2: TRANSACTION HISTORY (FR89, FR92, FR93) */
+      )}
+
+      {activeTab === 'history' && (
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -318,45 +399,72 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                 Transaction history
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                All outlets · request edits or voids for admin approval
+                All outlets · filter by Cash / QR Ph, search by any attribute, inspect or edit directly
               </p>
             </div>
             <div className="flex items-center gap-2.5">
               <button
                 type="button"
-                onClick={() => handleOpenEditFor()}
-                className="px-4 py-2.5 rounded-xl bg-white border border-gray-300 text-xs font-semibold text-[#1A1A1A] hover:bg-gray-50 cursor-pointer min-h-[42px]"
-              >
-                Request edit
-              </button>
-              <button
-                type="button"
-                onClick={() => handleOpenVoidFor()}
+                onClick={() => handleOpenDirectEdit()}
                 className="px-4 py-2.5 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] text-xs font-bold cursor-pointer min-h-[42px]"
               >
-                Request void
+                Edit selected
               </button>
             </div>
           </div>
 
           <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
-            <div className="p-4 sm:px-6 border-b border-gray-100 flex items-center justify-between gap-3">
-              <div className="text-sm font-bold text-[#1A1A1A]">All transactions</div>
-              <div className="inline-flex p-1 bg-gray-100 rounded-xl gap-0.5">
-                {(['all', 'paid', 'pending', 'void'] as const).map((st) => (
-                  <button
-                    key={st}
-                    type="button"
-                    onClick={() => setStatusFilter(st)}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold capitalize cursor-pointer ${
-                      statusFilter === st
-                        ? 'bg-white text-[#1A1A1A] shadow-2xs'
-                        : 'text-gray-500 hover:text-[#1A1A1A]'
-                    }`}
-                  >
-                    {st}
-                  </button>
-                ))}
+            <div className="p-4 sm:px-6 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="text-sm font-bold text-[#1A1A1A]">
+                All transactions ({historyRows.length})
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-2.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search ID, customer, outlet, handler..."
+                    className="pl-8 pr-3 py-1.5 rounded-xl border border-gray-200 text-xs text-[#1A1A1A] outline-none focus:border-[#1A1A1A] w-56 sm:w-64"
+                  />
+                </div>
+
+                {/* Channel Filter: All / Cash / QRPh */}
+                <div className="inline-flex p-1 bg-gray-100 rounded-xl gap-0.5">
+                  {(['all', 'Cash', 'QRPh'] as const).map((ch) => (
+                    <button
+                      key={ch}
+                      type="button"
+                      onClick={() => setChannelFilter(ch)}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        channelFilter === ch
+                          ? 'bg-[#FFE27A] text-[#1A1A1A] font-bold shadow-2xs'
+                          : 'text-gray-500 hover:text-[#1A1A1A]'
+                      }`}
+                    >
+                      {ch === 'all' ? 'All modes' : ch === 'QRPh' ? 'QR Ph' : 'Cash'}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Status Filter */}
+                <div className="inline-flex p-1 bg-gray-100 rounded-xl gap-0.5">
+                  {(['all', 'paid', 'pending', 'void'] as const).map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold capitalize cursor-pointer ${
+                        statusFilter === st
+                          ? 'bg-white text-[#1A1A1A] shadow-2xs'
+                          : 'text-gray-500 hover:text-[#1A1A1A]'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -367,6 +475,7 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                     <th className="py-3 px-6">ID</th>
                     <th className="py-3 px-4">Customer</th>
                     <th className="py-3 px-4">Service</th>
+                    <th className="py-3 px-4">Channel</th>
                     <th className="py-3 px-4 text-right">Amount</th>
                     <th className="py-3 px-4 text-center">Status</th>
                     <th className="py-3 px-4">Time</th>
@@ -374,61 +483,79 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-xs">
-                  {historyRows.map((tx) => {
-                    const isSelected = selectedTxId === tx.transactionID;
-                    return (
-                      <tr
-                        key={tx.transactionID}
-                        onClick={() => setSelectedTxId(tx.transactionID)}
-                        className={`transition-colors cursor-pointer ${
-                          isSelected ? 'bg-[#FFE27A]/20' : 'hover:bg-gray-50/70'
-                        }`}
-                      >
-                        <td className="py-3.5 px-6 font-mono text-gray-500 whitespace-nowrap">
-                          {tx.transactionID}
-                        </td>
-                        <td className="py-3.5 px-4 font-bold text-[#1A1A1A]">{tx.customerName}</td>
-                        <td className="py-3.5 px-4 text-gray-600 max-w-xs truncate">
-                          <span className="font-semibold text-[#1A1A1A]">{tx.outletName.split(' ')[0]}</span> ·{' '}
-                          {tx.outletService}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-bold text-[#1A1A1A] tabular-nums whitespace-nowrap">
-                          ₱{tx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
-                          <StatusChip status={tx.transactionStatus} size="sm" />
-                        </td>
-                        <td className="py-3.5 px-4 text-gray-500 whitespace-nowrap tabular-nums">
-                          {new Date(tx.transactionDateTime).toLocaleTimeString([], {
-                            hour: 'numeric',
-                            minute: '2-digit',
-                          })}
-                        </td>
-                        <td className="py-3.5 px-6 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                          <div className="inline-flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditFor(tx)}
-                              className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
-                              title="Request edit (FR92)"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            {tx.transactionStatus !== 'void' && (
+                  {historyRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-10 text-center text-gray-400">
+                        No transactions match your filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    historyRows.map((tx) => {
+                      const isSelected = selectedTxId === tx.transactionID;
+                      return (
+                        <tr
+                          key={tx.transactionID}
+                          onClick={() => setSelectedTxId(tx.transactionID)}
+                          className={`transition-colors cursor-pointer ${
+                            isSelected ? 'bg-[#FFE27A]/20' : 'hover:bg-gray-50/70'
+                          }`}
+                        >
+                          <td className="py-3.5 px-6 font-mono text-gray-500 whitespace-nowrap">
+                            {tx.transactionID}
+                          </td>
+                          <td className="py-3.5 px-4 font-bold text-[#1A1A1A]">
+                            {tx.customerName}
+                          </td>
+                          <td className="py-3.5 px-4 text-gray-600 max-w-xs truncate">
+                            <span className="font-semibold text-[#1A1A1A]">
+                              {tx.outletName.split(' ')[0]}
+                            </span>{' '}
+                            · {tx.outletService}
+                          </td>
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <span className="px-2 py-0.5 rounded-md bg-gray-100 text-[#1A1A1A] font-semibold text-[11px]">
+                              {tx.paymentChannel === 'QRPh' ? 'QR Ph' : tx.paymentChannel}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-bold text-[#1A1A1A] tabular-nums whitespace-nowrap">
+                            ₱{tx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-center">
+                            <StatusChip status={tx.transactionStatus} size="sm" />
+                          </td>
+                          <td className="py-3.5 px-4 text-gray-500 whitespace-nowrap tabular-nums">
+                            {new Date(tx.transactionDateTime).toLocaleTimeString([], {
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}
+                          </td>
+                          <td
+                            className="py-3.5 px-6 text-right whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="inline-flex items-center gap-1">
                               <button
                                 type="button"
-                                onClick={() => handleOpenVoidFor(tx)}
-                                className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
-                                title="Request void (FR93)"
+                                onClick={() => setDetailTx(tx)}
+                                className="p-1.5 rounded-lg text-gray-500 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
+                                title="View transaction details"
                               >
-                                <XCircle className="w-3.5 h-3.5" />
+                                <Eye className="w-3.5 h-3.5" />
                               </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenDirectEdit(tx)}
+                                className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
+                                title="Edit transaction directly (no approval needed)"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -436,25 +563,301 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
         </div>
       )}
 
-      {/* Accountant Edit Request Modal (FR92) */}
+      {activeTab === 'approvals' && (
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight text-[#1A1A1A]">
+              Accountant approvals
+            </h1>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Confirm cash payments, review Front-Desk edit requests, and decide void requests
+            </p>
+          </div>
+
+          {/* 1. Cash Payments to Confirm (Migrated from Front-Desk) */}
+          <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-sm font-bold text-[#1A1A1A]">Cash payments to confirm</span>
+              <span className="text-xs font-bold text-gray-500">
+                {pendingCashItems.length} pending audit
+              </span>
+            </div>
+            {cashConfirmations.length === 0 ? (
+              <div className="py-8 text-center text-xs text-gray-400">
+                No cash confirmations queued.
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {cashConfirmations.map((c) => (
+                  <div
+                    key={c.id}
+                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 flex-1 items-center">
+                      <span className="font-bold font-mono text-[#1A1A1A]">
+                        {c.transactionId} · {c.customerName}
+                      </span>
+                      <span className="text-gray-600">
+                        {c.outletName}
+                        {c.cashReceivedBy ? ` · Rx by ${c.cashReceivedBy}` : ''}
+                      </span>
+                      <span className="font-bold text-[#1A1A1A] tabular-nums">
+                        ₱{c.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => inspectTransactionById(c.transactionId)}
+                        className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] cursor-pointer"
+                        title="View transaction details"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      {c.status === 'pending_audit' ? (
+                        <button
+                          type="button"
+                          onClick={() => store.approveCashConfirmation(c.id, user.name)}
+                          className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
+                        >
+                          Confirm cash
+                        </button>
+                      ) : (
+                        <span className="px-3 py-1 rounded-full bg-[#FFE27A] text-[#1A1A1A] font-bold text-[11px]">
+                          Confirmed
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Edit Requests Approval (Migrated from Front-Desk; includes Front-Desk edit submissions) */}
+          <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-sm font-bold text-[#1A1A1A]">Edit requests approval</span>
+              <span className="text-xs font-bold text-gray-500">
+                {pendingEdits.length} pending
+              </span>
+            </div>
+            {editRequests.length === 0 ? (
+              <div className="py-8 text-center text-xs text-gray-400">No edit requests submitted.</div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {editRequests.map((er) => (
+                  <div
+                    key={er.id}
+                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div>
+                      <div className="font-bold font-mono text-[#1A1A1A]">
+                        {er.transactionId}
+                        {er.changes.customerName ? ` · ${er.changes.customerName}` : ''}
+                        {er.changes.transactionStatus ? ` · Status: ${er.changes.transactionStatus}` : ''}
+                        {er.changes.totalAmount !== undefined
+                          ? ` · ₱${er.changes.totalAmount.toLocaleString('en-PH', {
+                              minimumFractionDigits: 2,
+                            })}`
+                          : ''}
+                      </div>
+                      <div className="text-gray-500 mt-0.5">
+                        Requested by {er.requestedByName} — {er.note}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => inspectTransactionById(er.transactionId)}
+                        className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] cursor-pointer"
+                        title="View transaction details"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      {er.status === 'pending' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => store.decideEditRequest(er.id, 'rejected', user.name)}
+                            className="px-4 py-2 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => store.decideEditRequest(er.id, 'approved', user.name)}
+                            className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
+                          >
+                            Approve edit
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-xs font-bold capitalize text-gray-500">
+                          {er.status} {er.decidedBy ? `· ${er.decidedBy}` : ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Void Requests Approval (Migrated from Front-Desk) */}
+          <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-sm font-bold text-[#1A1A1A]">Void requests approval</span>
+              <span className="text-xs font-bold text-gray-500">
+                {pendingVoids.length} pending
+              </span>
+            </div>
+            {voidRequests.length === 0 ? (
+              <div className="py-8 text-center text-xs text-gray-400">No void requests.</div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {voidRequests.map((v) => (
+                  <div
+                    key={v.id}
+                    className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 flex-1 items-center">
+                      <span className="font-bold font-mono text-[#1A1A1A]">{v.transactionId}</span>
+                      <span className="text-gray-600">{v.requestedByName}</span>
+                      <span className="text-gray-600 truncate">{v.reason}</span>
+                      <span className="font-bold text-[#1A1A1A] tabular-nums">
+                        ₱{v.amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => inspectTransactionById(v.transactionId)}
+                        className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] cursor-pointer"
+                        title="View transaction details"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      {v.status === 'pending' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => store.decideVoidRequest(v.id, 'rejected', user.name)}
+                            className="px-4 py-2 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => store.decideVoidRequest(v.id, 'approved', user.name)}
+                            className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
+                          >
+                            Approve void
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-xs font-bold capitalize text-gray-500">
+                          {v.status} · {v.decidedBy}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'deposit' && (
+        <DepositValidationView
+          user={user}
+          transactions={transactions}
+          onInspectTx={(tx) => setDetailTx(tx)}
+        />
+      )}
+
+      {activeTab === 'analysis' && (
+        <FinancialAnalysisView user={user} transactions={transactions} />
+      )}
+
+      {activeTab === 'forecasting' && (
+        <ForecastingView
+          user={user}
+          transactions={transactions}
+          forecast={latestForecast}
+          onForecastUpdated={(next) => setLatestForecast(next)}
+        />
+      )}
+
+      {activeTab === 'advisor' && (
+        <DecisionAdvisorView transactions={transactions} latestForecast={latestForecast} />
+      )}
+
+      {activeTab === 'reconciliation' && (
+        <FinancialReconciliationView
+          user={user}
+          transactions={transactions}
+          onInspectTx={(tx) => setDetailTx(tx)}
+        />
+      )}
+
+      {/* Accountant Direct Edit Modal (No approval needed per Rev 002) */}
       {editingTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl">
-            <h3 className="text-base font-extrabold text-[#1A1A1A]">Request edit</h3>
+            <h3 className="text-base font-extrabold text-[#1A1A1A]">
+              Edit transaction ({editingTx.transactionID})
+            </h3>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Direct Accountant modification (applies immediately)
+            </p>
             <div className="mt-3 p-3.5 rounded-xl bg-[#FFE27A] text-[#1A1A1A] text-xs">
               <div className="font-bold font-mono">
-                {editingTx.transactionID} · {editingTx.customerName}
-              </div>
-              <div className="text-[#1A1A1A]/80 mt-0.5">
-                {editingTx.outletName} · ₱{editingTx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                {editingTx.outletName} · {editingTx.outletService}
               </div>
             </div>
-            <form onSubmit={handleSubmitEditRequest} className="mt-4 space-y-3 text-xs">
+            <form onSubmit={handleSaveDirectEdit} className="mt-4 space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-gray-600 mb-1">Target status</label>
+                <label className="block font-semibold text-gray-600 mb-1">Customer name</label>
+                <input
+                  type="text"
+                  value={editCustomer}
+                  onChange={(e) => setEditCustomer(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-gray-300"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-gray-600 mb-1">Amount (₱)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(Number(e.target.value))}
+                    className="w-full p-2.5 rounded-xl border border-gray-300 font-bold tabular-nums"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-gray-600 mb-1">Discount (₱)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={editDiscount}
+                    onChange={(e) => setEditDiscount(Number(e.target.value))}
+                    className="w-full p-2.5 rounded-xl border border-gray-300 tabular-nums"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-600 mb-1">Transaction status</label>
                 <select
-                  value={newStatus}
-                  onChange={(e: any) => setNewStatus(e.target.value)}
+                  value={editStatus}
+                  onChange={(e: any) => setEditStatus(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-gray-300 bg-white"
                 >
                   <option value="paid">Paid</option>
@@ -462,37 +865,11 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                   <option value="void">Void</option>
                 </select>
               </div>
-              <div>
-                <label className="block font-semibold text-gray-600 mb-1">Amount (₱)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={newAmount}
-                  onChange={(e) => setNewAmount(Number(e.target.value))}
-                  className="w-full p-2.5 rounded-xl border border-gray-300 font-bold tabular-nums"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-semibold text-gray-600 mb-1">Audit note *</label>
-                <textarea
-                  value={editNote}
-                  onChange={(e) => setEditNote(e.target.value)}
-                  placeholder="Explain the adjustment for the admin"
-                  rows={2}
-                  className="w-full p-2.5 rounded-xl border border-gray-300"
-                  required
-                />
-              </div>
-              <p className="text-[11px] text-gray-500">
-                Sent to Admin for approval before changes apply (FR92).
-              </p>
-              <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <div className="grid grid-cols-2 gap-2.5 pt-2">
                 <button
                   type="button"
                   onClick={() => setEditingTx(null)}
-                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold"
+                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -500,7 +877,7 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
                   type="submit"
                   className="py-2.5 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
                 >
-                  Send request
+                  Save changes
                 </button>
               </div>
             </form>
@@ -508,64 +885,9 @@ export const AccountantDashboard: React.FC<AccountantDashboardProps> = ({
         </div>
       )}
 
-      {/* Accountant Void Request Modal (FR93) */}
-      {voidingTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl">
-            <h3 className="text-base font-extrabold text-[#1A1A1A]">Request void</h3>
-            <div className="mt-3 p-3.5 rounded-xl bg-[#FFE27A] text-[#1A1A1A] text-xs">
-              <div className="font-bold font-mono">
-                {voidingTx.transactionID} · {voidingTx.customerName}
-              </div>
-              <div className="text-[#1A1A1A]/80 mt-0.5">
-                {voidingTx.outletName} · ₱{voidingTx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-              </div>
-            </div>
-            <form onSubmit={handleSubmitVoidRequest} className="mt-4 space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold text-gray-600 mb-1">Reason *</label>
-                <select
-                  value={voidReason}
-                  onChange={(e) => setVoidReason(e.target.value)}
-                  className="w-full p-2.5 rounded-xl border border-gray-300 bg-white"
-                  required
-                >
-                  <option value="Customer cancelled">Customer cancelled</option>
-                  <option value="Duplicate entry">Duplicate entry</option>
-                  <option value="Bank reconciliation mismatch">Bank reconciliation mismatch</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold text-gray-600 mb-1">Notes (optional)</label>
-                <textarea
-                  value={voidNote}
-                  onChange={(e) => setVoidNote(e.target.value)}
-                  placeholder="Add a short note for the admin"
-                  rows={2}
-                  className="w-full p-2.5 rounded-xl border border-gray-300"
-                />
-              </div>
-              <p className="text-[11px] text-gray-500">
-                Sent to Admin for approval. Accountants cannot delete transactions directly (FR93).
-              </p>
-              <div className="grid grid-cols-2 gap-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setVoidingTx(null)}
-                  className="py-2.5 rounded-xl bg-white border border-gray-300 font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="py-2.5 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
-                >
-                  Send request
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {/* Transaction Details Modal (Eye icon) */}
+      {detailTx && (
+        <TransactionDetailsModal transaction={detailTx} onClose={() => setDetailTx(null)} />
       )}
     </SidebarShell>
   );

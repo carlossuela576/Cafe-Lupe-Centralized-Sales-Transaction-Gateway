@@ -18,7 +18,7 @@ import { ChevronDown, Clock, Check } from 'lucide-react';
 interface OutletTransactionFormProps {
   outlet: Outlet;
   user: User;
-  onSuccess: (newTxId: string, channel: PaymentChannel) => void;
+  onSuccess: (newTxId: string, channel: PaymentChannel, arrangement: PaymentArrangement) => void;
   onCancel: () => void;
 }
 
@@ -548,7 +548,7 @@ export const OutletTransactionForm: React.FC<OutletTransactionFormProps> = ({
       childTableData: childData,
     });
 
-    onSuccess(createdTx.transactionID, paymentChannel);
+    onSuccess(createdTx.transactionID, paymentChannel, paymentArrangement);
   };
 
   return (
@@ -1551,7 +1551,11 @@ export const OutletTransactionForm: React.FC<OutletTransactionFormProps> = ({
               ₱{totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
             </div>
             <div className="text-[11px] font-semibold text-[#1A1A1A]/75 mt-1">
-              {willBePaidImmediately ? 'Marked Paid on save' : 'Marked Pending until balance is paid'}
+              {willBePaidImmediately
+                ? 'Marked Paid on save'
+                : paymentArrangement === 'Down Payment'
+                ? 'Initial down payment prompt opens on save'
+                : 'Marked Pending until scanned'}
             </div>
           </div>
 

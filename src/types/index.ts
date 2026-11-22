@@ -77,6 +77,8 @@ export interface MasterTransaction {
   transactionDateTime: string;
   paymentArrangement: PaymentArrangement;
   paymentChannel: PaymentChannel;
+  initialPaymentMode?: PaymentChannel | null;
+  balancePaymentMode?: PaymentChannel | null;
 
   // Relational pointers
   outletRefTable: string;
@@ -86,11 +88,12 @@ export interface MasterTransaction {
   qrToken?: string | null;
   paidAt?: string | null;
 
-  // Live Countdown Timer & Hourly Rate Extension (Rev 001)
+  // Live Countdown Timer & Hourly Rate Extension (Rev 001 + Rev 002)
   hourlyRate?: number | null;
   timerDurationMinutes?: number | null;
   timerStartedAt?: string | null;
   timerEndsAt?: string | null;
+  timerStoppedAt?: string | null;
   timerAcknowledged?: boolean;
 
   // Concurrency & Lockout (NFR4-NFR6)
@@ -215,6 +218,8 @@ export interface FnbTransaction {
   orderItems: PosOrderItem[];
   receiptPrintedAt?: string | null;
   tableOrRoomNo?: string;
+  totalPax?: number;
+  validIdCount?: number;
 }
 
 // 7. Billiards
@@ -304,7 +309,9 @@ export interface EditRequest {
   transactionId: string;
   requestedBy: string;
   requestedByName: string;
+  requestedByRole?: UserRole;
   changes: {
+    customerName?: string;
     transactionStatus?: TransactionStatus;
     transactionAmount?: number;
     discount?: number;
@@ -321,6 +328,7 @@ export interface EditRequest {
 export interface CashConfirmation {
   id: string;
   transactionId: string;
+  installmentId?: string | null;
   outletName: string;
   customerName: string;
   amount: number;
@@ -330,3 +338,60 @@ export interface CashConfirmation {
   approvedAt?: string | null;
   createdAt: string;
 }
+
+// Normalized Split Payment Installments (Revision 002)
+export interface PaymentInstallment {
+  installmentID: string;
+  transactionId: string;
+  phase: 'initial' | 'balance';
+  paymentChannel: PaymentChannel;
+  amount: number;
+  status: 'pending' | 'confirmed' | 'voided';
+  cashReceivedBy?: string | null;
+  qrToken?: string | null;
+  paidAt?: string | null;
+  createdAt: string;
+}
+
+// AI Audit & Bank Reconciliation Persistence (Revision 002)
+export interface AiAuditLog {
+  auditID: string;
+  auditType: 'deposit_validation' | 'financial_summary' | 'forecast_plan' | 'advisor_query';
+  targetDate?: string | null;
+  systemTotal: number;
+  extractedTotal: number;
+  discrepancyAmount: number;
+  matchStatus: 'matched' | 'conflict' | 'info';
+  extractedJson: Record<string, any>;
+  summaryText: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ReconciliationEntryComparison {
+  referenceId: string;
+  date: string;
+  description: string;
+  systemAmount: number | null;
+  statementAmount: number | null;
+  status: 'matched' | 'conflict';
+  reason: string;
+}
+
+export interface ReconciliationBatch {
+  reconID: string;
+  outletId: string;
+  outletName: string;
+  startDate: string;
+  endDate: string;
+  statementFilename: string;
+  extractedEntriesJson: Array<Record<string, any>>;
+  comparisonResultsJson: ReconciliationEntryComparison[];
+  overallStatus: 'matched' | 'conflict';
+  summaryNote?: string;
+  statementTotal?: number;
+  systemTotal?: number;
+  createdBy: string;
+  createdAt: string;
+}
+

@@ -4,12 +4,11 @@ import {
   PosOrderItem,
   PosMenuItem,
   PosMenuVariant,
-  PaymentArrangement,
   PaymentChannel,
   MasterTransaction,
   FnbTransaction,
 } from '../../types';
-import { store, calculateDiscountBreakdown } from '../../db/store';
+import { store, calculateFnbScPwdDiscount } from '../../db/store';
 import { INITIAL_POS_ITEMS } from '../../db/initialData';
 import { QrPhModal } from '../common/QrPhModal';
 import { Plus, Minus, Search } from 'lucide-react';
@@ -58,10 +57,10 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
   const [tableOrRoomNo, setTableOrRoomNo] = useState<string>('Table 4');
   const [customerName, setCustomerName] = useState<string>('');
 
-  // Universal Revision 001 Payment Controls
+  // Revision 002 F&B POS Payment Controls (Strictly Upfront Full Payment + SC/PWD Pax/IDs)
   const [discountApplied, setDiscountApplied] = useState<boolean>(false);
-  const [paymentArrangement, setPaymentArrangement] = useState<PaymentArrangement>('Full Payment');
-  const [downPaymentAmount, setDownPaymentAmount] = useState<number>(0);
+  const [totalPax, setTotalPax] = useState<number>(1);
+  const [validIdCount, setValidIdCount] = useState<number>(1);
   const [paymentChannel, setPaymentChannel] = useState<PaymentChannel>('Cash');
   const [cashReceivedBy, setCashReceivedBy] = useState<string>(user.name.split(' (')[0]);
 
@@ -146,15 +145,12 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
 
   const sellingSubtotal = cart.reduce((acc, item) => acc + item.subtotal, 0);
   const totalItemsCount = cart.reduce((acc, item) => acc + item.quantity, 0);
-  const { discount, totalAmount } = calculateDiscountBreakdown(sellingSubtotal, discountApplied);
-
-  const clampedDownPayment =
-    paymentArrangement === 'Down Payment'
-      ? Math.min(totalAmount, Math.max(0, downPaymentAmount))
-      : paymentChannel === 'Cash'
-      ? totalAmount
-      : 0;
-  const balanceDue = Math.max(0, Math.round((totalAmount - clampedDownPayment) * 100) / 100);
+  const { discount, totalAmount, clampedPax, clampedIds } = calculateFnbScPwdDiscount(
+    sellingSubtotal,
+    discountApplied,
+    totalPax,
+    validIdCount
+  );
 
   const handlePlaceOrder = () => {
     if (cart.length === 0) return;
@@ -168,6 +164,8 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
       auditedTo,
       orderItems: cart,
       tableOrRoomNo,
+      totalPax: clampedPax,
+      validIdCount: discountApplied ? clampedIds : 0,
       receiptPrintedAt: new Date().toISOString(),
     };
 
@@ -183,9 +181,8 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
       cashReceivedBy: paymentChannel === 'Cash' ? cashReceivedBy.trim() || user.name : null,
       transactionAmount: sellingSubtotal,
       discountApplied,
-      paymentArrangement,
+      paymentArrangement: 'Full Payment',
       paymentChannel,
-      downPaymentAmount: paymentArrangement === 'Down Payment' ? clampedDownPayment : undefined,
       childTableData: childData,
     });
 
@@ -194,8 +191,8 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
     onTransactionCreated();
     setCart([]);
     setDiscountApplied(false);
-    setPaymentArrangement('Full Payment');
-    setDownPaymentAmount(0);
+    setTotalPax(1);
+    setValidIdCount(1);
     setPlacedOrder({ tx: newTx, fnb: fnbChild, orderNum: `#${nextOrderNumber}` });
 
     if (paymentChannel === 'QRPh') {
@@ -428,7 +425,10 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDiscountApplied(true)}
+                  onClick={() => {
+                    setDiscountApplied(true);
+                    if (validIdCount < 1) setValidIdCount(1);
+                  }}
                   className={`flex-1 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
                     discountApplied ? 'bg-[#FFE27A] text-[#1A1A1A] font-bold shadow-2xs' : 'text-gray-600'
                   }`}
@@ -459,54 +459,47 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="block text-[11px] font-semibold text-gray-500 mb-1">
-              Payment arrangement
-            </label>
-            <div className="flex p-1 bg-gray-100 rounded-xl gap-1">
-              {(['Full Payment', 'Down Payment'] as const).map((arr) => (
-                <button
-                  key={arr}
-                  type="button"
-                  onClick={() => {
-                    setPaymentArrangement(arr);
-                    if (arr === 'Down Payment' && downPaymentAmount === 0 && totalAmount > 0) {
-                      setDownPaymentAmount(Math.round(totalAmount * 0.5));
-                    }
-                  }}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${
-                    paymentArrangement === arr ? 'bg-white text-[#1A1A1A] shadow-2xs' : 'text-gray-600'
-                  }`}
-                >
-                  {arr}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {paymentArrangement === 'Down Payment' && (
-            <div className="grid grid-cols-2 gap-2.5 p-3 rounded-xl bg-[#F7F7F7] border border-gray-200 text-xs">
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-600 mb-1">
-                  Down payment (₱)
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  max={totalAmount}
-                  step="any"
-                  value={downPaymentAmount}
-                  onChange={(e) => setDownPaymentAmount(Math.max(0, Number(e.target.value)))}
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 bg-white font-bold tabular-nums"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-600 mb-1">
-                  Balance due
-                </label>
-                <div className="px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white font-extrabold text-[#FF5252] tabular-nums">
-                  ₱{balanceDue.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+          {discountApplied && (
+            <div className="p-3 rounded-xl bg-[#F7F7F7] border border-gray-200 space-y-2.5 text-xs">
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
+                    Total pax *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={totalPax}
+                    onChange={(e) => {
+                      const nextPax = Math.max(1, Math.floor(Number(e.target.value) || 1));
+                      setTotalPax(nextPax);
+                      if (validIdCount > nextPax) setValidIdCount(nextPax);
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 bg-white font-bold tabular-nums"
+                  />
                 </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
+                    Valid SC/PWD IDs *
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={clampedPax}
+                    value={validIdCount}
+                    onChange={(e) =>
+                      setValidIdCount(
+                        Math.min(clampedPax, Math.max(0, Math.floor(Number(e.target.value) || 0)))
+                      )
+                    }
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 bg-white font-bold tabular-nums"
+                  />
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500 font-mono">
+                Formula: ((₱{sellingSubtotal.toFixed(2)} ÷ 1.12) ÷ {clampedPax} pax × {clampedIds}{' '}
+                {clampedIds === 1 ? 'ID' : 'IDs'}) × 0.20 = -₱{discount.toFixed(2)}
               </div>
             </div>
           )}
@@ -529,7 +522,7 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
           {/* #FFE27A Total Box */}
           <div className="rounded-2xl p-4 bg-[#FFE27A] text-[#1A1A1A]">
             <div className="flex items-center justify-between text-xs font-semibold text-[#1A1A1A]/75">
-              <span>Total payable</span>
+              <span>Total payable (Upfront Full Payment)</span>
               {discountApplied && (
                 <span className="tabular-nums">Discount: -₱{discount.toFixed(2)}</span>
               )}
@@ -539,7 +532,7 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
             </div>
             <div className="text-[11px] font-semibold text-[#1A1A1A]/75 mt-1 tabular-nums">
               {totalItemsCount} {totalItemsCount === 1 ? 'item' : 'items'}
-              {paymentArrangement === 'Down Payment' ? ` · Balance: ₱${balanceDue.toFixed(2)}` : ''}
+              {discountApplied ? ` · ${clampedIds}/${clampedPax} SC/PWD pax` : ''}
             </div>
           </div>
 

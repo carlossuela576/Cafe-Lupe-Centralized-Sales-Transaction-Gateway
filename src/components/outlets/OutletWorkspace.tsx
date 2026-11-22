@@ -5,6 +5,7 @@ import {
   MasterTransaction,
   TransactionStatus,
   PaymentChannel,
+  PaymentArrangement,
   VoidRequest,
 } from '../../types';
 import { store, TIMED_OUTLET_SLUGS, calculateDiscountBreakdown } from '../../db/store';
@@ -15,6 +16,11 @@ import { OutletTransactionForm } from './OutletTransactionForm';
 import { PosTerminal } from './PosTerminal';
 import { QrPhModal } from '../common/QrPhModal';
 import { ReceiptModal } from '../common/ReceiptModal';
+import { TransactionDetailsModal } from '../common/TransactionDetailsModal';
+import {
+  InitialDownPaymentCashModal,
+  PayBalanceModal,
+} from '../common/PaymentWorkflowModals';
 import {
   LayoutGrid,
   Clock,
@@ -29,16 +35,17 @@ import {
   Bell,
   Timer,
   Banknote,
+  Square,
 } from 'lucide-react';
 
 interface OutletWorkspaceProps {
   outlet: Outlet;
   user: User;
   onOpenProfile: () => void;
-  onOpenExport: () => void;
   onLogout: () => void;
   topBanner?: React.ReactNode;
   headerExtra?: React.ReactNode;
+  sidebarExtra?: React.ReactNode;
 }
 
 function formatRemainingCountdown(timerEndsAt: string | null | undefined, nowMs: number): {
@@ -58,21 +65,14 @@ function formatRemainingCountdown(timerEndsAt: string | null | undefined, nowMs:
   return { label: `${pad(hrs)}:${pad(mins)}:${pad(secs)}`, isExpired: false };
 }
 
-function formatFieldLabel(key: string): string {
-  return key
-    .replace(/([A-Z])/g, ' $1')
-    .replace(/^./, (s) => s.toUpperCase())
-    .trim();
-}
-
 export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
   outlet,
   user,
   onOpenProfile,
-  onOpenExport,
   onLogout,
   topBanner,
   headerExtra,
+  sidebarExtra,
 }) => {
   const [activeNav, setActiveNav] = useState<'dashboard' | 'history' | 'voids'>('dashboard');
   const [viewMode, setViewMode] = useState<'main' | 'create' | 'pos'>('main');
@@ -83,11 +83,12 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all');
   const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [bannerNotice, setBannerNotice] = useState<{ type: 'info' | 'warn'; text: string } | null>(null);
 
   // Modals
   const [qrModalTx, setQrModalTx] = useState<MasterTransaction | null>(null);
-  const [cashPayTx, setCashPayTx] = useState<MasterTransaction | null>(null);
-  const [cashReceiverInput, setCashReceiverInput] = useState<string>(user.name.split(' (')[0]);
+  const [initialCashDownTx, setInitialCashDownTx] = useState<MasterTransaction | null>(null);
+  const [payBalanceTx, setPayBalanceTx] = useState<MasterTransaction | null>(null);
   const [extendTx, setExtendTx] = useState<MasterTransaction | null>(null);
   const [extendHours, setExtendHours] = useState<number>(1);
 
@@ -96,14 +97,17 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
   const [editAmount, setEditAmount] = useState<number>(0);
   const [editDiscountApplied, setEditDiscountApplied] = useState<boolean>(false);
   const [editCustomer, setEditCustomer] = useState<string>('');
+  const [editStatus, setEditStatus] = useState<TransactionStatus>('pending');
+  const [editNote, setEditNote] = useState<string>('');
   const [editLockError, setEditLockError] = useState<string | null>(null);
 
   const [voidingTx, setVoidingTx] = useState<MasterTransaction | null>(null);
   const [voidReason, setVoidReason] = useState<string>('Customer cancelled');
   const [voidNote, setVoidNote] = useState<string>('');
-  const [detailTx, setDetailTx] = useState<{ tx: MasterTransaction; childData: any } | null>(null);
+  const [detailTx, setDetailTx] = useState<MasterTransaction | null>(null);
 
   const isTimedOutlet = TIMED_OUTLET_SLUGS.includes(outlet.slug);
+  const isFrontDeskAdmin = user.role === 'admin';
 
   const loadData = () => {
     setTransactions(store.getTransactions(outlet.slug));
@@ -123,6 +127,13 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
     return () => window.clearInterval(timer);
   }, []);
 
+  const showNotice = (type: 'info' | 'warn', text: string) => {
+    setBannerNotice({ type, text });
+    window.setTimeout(() => {
+      setBannerNotice((prev) => (prev?.text === text ? null : prev));
+    }, 5500);
+  };
+
   const paidTransactions = transactions.filter((t) => t.transactionStatus === 'paid');
   const pendingTransactions = transactions.filter((t) => t.transactionStatus === 'pending');
 
@@ -132,10 +143,11 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
     0
   );
 
-  // Expired countdown timers requiring acknowledgement
+  // Expired countdown timers requiring unavoidable blocking acknowledgement (exclude stopped timers)
   const expiredTimedTxs = transactions.filter(
     (t) =>
       t.timerEndsAt &&
+      !t.timerStoppedAt &&
       !t.timerAcknowledged &&
       t.transactionStatus !== 'void' &&
       new Date(t.timerEndsAt).getTime() <= nowMs
@@ -158,29 +170,30 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
     return matchesStatus && matchesSearch;
   });
 
-  const handleTransactionCreated = (newTxId: string, channel: PaymentChannel) => {
+  const handleTransactionCreated = (
+    newTxId: string,
+    channel: PaymentChannel,
+    arrangement?: PaymentArrangement
+  ) => {
     setViewMode('main');
     loadData();
     const created = store.getTransactionById(newTxId);
-    if (created && channel === 'QRPh' && created.transactionStatus === 'pending') {
+    if (!created) return;
+
+    if (channel === 'QRPh' && created.transactionStatus === 'pending') {
       setQrModalTx(created);
+    } else if (
+      arrangement === 'Down Payment' &&
+      channel === 'Cash' &&
+      created.transactionStatus === 'pending' &&
+      created.amountPaid === 0
+    ) {
+      setInitialCashDownTx(created);
     }
   };
 
   const handlePayBalance = (tx: MasterTransaction) => {
-    if (tx.paymentChannel === 'QRPh') {
-      const res = store.payBalance(tx.transactionID, 'QRPh');
-      setQrModalTx(res.transaction || tx);
-      return;
-    }
-    setCashReceiverInput(tx.cashReceivedBy || user.name.split(' (')[0]);
-    setCashPayTx(tx);
-  };
-
-  const handleConfirmCashBalance = () => {
-    if (!cashPayTx) return;
-    store.payBalance(cashPayTx.transactionID, 'Cash', cashReceiverInput);
-    setCashPayTx(null);
+    setPayBalanceTx(tx);
   };
 
   const handleOpenExtend = (tx: MasterTransaction) => {
@@ -196,21 +209,52 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
   };
 
   const handleStartEdit = (tx: MasterTransaction) => {
-    const lockRes = store.acquireLock(tx.transactionID, user.id, user.name);
-    if (!lockRes.acquired) {
-      setEditLockError(`Locked by ${lockRes.currentLockOwner || 'another clerk'} (NFR6).`);
-      setTimeout(() => setEditLockError(null), 4000);
-      return;
+    if (!isFrontDeskAdmin) {
+      const lockRes = store.acquireLock(tx.transactionID, user.id, user.name);
+      if (!lockRes.acquired) {
+        setEditLockError(`Locked by ${lockRes.currentLockOwner || 'another clerk'} (NFR6).`);
+        setTimeout(() => setEditLockError(null), 4000);
+        return;
+      }
     }
     setEditingTx(tx);
     setEditAmount(tx.transactionAmount);
     setEditDiscountApplied(tx.discountApplied);
     setEditCustomer(tx.customerName);
+    setEditStatus(tx.transactionStatus);
+    setEditNote('');
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTx) return;
+
+    // Front-Desk edits must go to Accountant for approval (Revision 002)
+    if (isFrontDeskAdmin) {
+      if (!editNote.trim()) {
+        setEditLockError('Please enter a short audit note for the Accountant.');
+        return;
+      }
+      const { discount, totalAmount } = calculateDiscountBreakdown(editAmount, editDiscountApplied);
+      store.createEditRequest(
+        editingTx.transactionID,
+        user.id,
+        user.name,
+        {
+          customerName: editCustomer,
+          transactionAmount: editAmount,
+          discount,
+          totalAmount,
+          transactionStatus: editStatus,
+        },
+        editNote.trim(),
+        'admin'
+      );
+      setEditingTx(null);
+      showNotice('info', `Edit request for ${editingTx.transactionID} sent to Accountant for approval.`);
+      return;
+    }
+
     const res = store.updatePendingTransaction(
       editingTx.transactionID,
       {
@@ -229,7 +273,9 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
 
   const handleCancelEdit = () => {
     if (editingTx) {
-      store.releaseLock(editingTx.transactionID, user.id);
+      if (!isFrontDeskAdmin) {
+        store.releaseLock(editingTx.transactionID, user.id);
+      }
       setEditingTx(null);
     }
   };
@@ -433,6 +479,15 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 const isSelected = selectedTxId === tx.transactionID;
                 const timerInfo = formatRemainingCountdown(tx.timerEndsAt, nowMs);
                 const hasBalance = tx.balanceDue > 0 || tx.transactionStatus === 'pending';
+                const canStopTimer =
+                  isTimedOutlet &&
+                  Boolean(tx.timerEndsAt) &&
+                  !tx.timerStoppedAt &&
+                  !timerInfo.isExpired &&
+                  tx.transactionStatus !== 'void';
+                const canEdit =
+                  tx.transactionStatus !== 'void' &&
+                  (isFrontDeskAdmin || tx.transactionStatus === 'pending');
 
                 return (
                   <tr
@@ -458,7 +513,12 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                     </td>
                     {isTimedOutlet && (
                       <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
-                        {tx.timerEndsAt ? (
+                        {tx.timerStoppedAt ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-gray-100 text-gray-700">
+                            <Square className="w-2.5 h-2.5 fill-current" />
+                            Stopped
+                          </span>
+                        ) : tx.timerEndsAt ? (
                           <span
                             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold ${
                               timerInfo.isExpired
@@ -494,22 +554,23 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                       <div className="inline-flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => {
-                            const child = store.getOutletChildData(tx.outletRefTable, tx.outletRefId);
-                            setDetailTx({ tx, childData: child });
-                          }}
+                          onClick={() => setDetailTx(tx)}
                           className="p-1.5 rounded-lg text-gray-500 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
                           title="View transaction & relational details"
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
 
-                        {tx.transactionStatus === 'pending' && (
+                        {canEdit && (
                           <button
                             type="button"
                             onClick={() => handleStartEdit(tx)}
                             className="p-1.5 rounded-lg text-gray-600 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
-                            title="Edit pending transaction"
+                            title={
+                              isFrontDeskAdmin
+                                ? 'Request transaction edit (Accountant approval)'
+                                : 'Edit pending transaction'
+                            }
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
@@ -528,6 +589,18 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                               <Banknote className="w-3 h-3" />
                             )}
                             Pay Balance
+                          </button>
+                        )}
+
+                        {canStopTimer && (
+                          <button
+                            type="button"
+                            onClick={() => store.stopTimer(tx.transactionID)}
+                            className="px-2.5 py-1 rounded-lg bg-gray-900 hover:bg-black text-white text-[11px] font-semibold cursor-pointer inline-flex items-center gap-1"
+                            title="Stop timer for early checkout"
+                          >
+                            <Square className="w-2.5 h-2.5 fill-current" />
+                            Stop
                           </button>
                         )}
 
@@ -588,6 +661,15 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
           rows.map((tx) => {
             const timerInfo = formatRemainingCountdown(tx.timerEndsAt, nowMs);
             const hasBalance = tx.balanceDue > 0 || tx.transactionStatus === 'pending';
+            const canStopTimer =
+              isTimedOutlet &&
+              Boolean(tx.timerEndsAt) &&
+              !tx.timerStoppedAt &&
+              !timerInfo.isExpired &&
+              tx.transactionStatus !== 'void';
+            const canEdit =
+              tx.transactionStatus !== 'void' &&
+              (isFrontDeskAdmin || tx.transactionStatus === 'pending');
 
             return (
               <div key={tx.transactionID} className="p-4 space-y-2.5">
@@ -595,10 +677,14 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                   <div className="min-w-0">
                     <div className="font-bold text-sm text-[#1A1A1A] truncate">{tx.customerName}</div>
                     <div className="text-xs text-gray-500 truncate mt-0.5">{tx.outletService}</div>
-                    {isTimedOutlet && tx.timerEndsAt && (
+                    {isTimedOutlet && (tx.timerStoppedAt || tx.timerEndsAt) && (
                       <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FFE27A]/50 text-[#1A1A1A] font-mono text-[11px] font-bold">
                         <Timer className="w-3 h-3" />
-                        {timerInfo.isExpired ? 'Expired' : timerInfo.label}
+                        {tx.timerStoppedAt
+                          ? 'Stopped'
+                          : timerInfo.isExpired
+                          ? 'Expired'
+                          : timerInfo.label}
                       </div>
                     )}
                   </div>
@@ -620,12 +706,10 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 <div className="pt-2 flex flex-wrap items-center gap-1.5 border-t border-gray-100 text-xs">
                   <button
                     type="button"
-                    onClick={() => {
-                      const child = store.getOutletChildData(tx.outletRefTable, tx.outletRefId);
-                      setDetailTx({ tx, childData: child });
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-gray-100 text-[#1A1A1A] font-medium"
+                    onClick={() => setDetailTx(tx)}
+                    className="px-2.5 py-1 rounded-lg bg-gray-100 text-[#1A1A1A] font-medium inline-flex items-center gap-1"
                   >
+                    <Eye className="w-3 h-3" />
                     Details
                   </button>
                   {hasBalance && tx.transactionStatus !== 'void' && (
@@ -637,6 +721,15 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                       Pay Balance
                     </button>
                   )}
+                  {canStopTimer && (
+                    <button
+                      type="button"
+                      onClick={() => store.stopTimer(tx.transactionID)}
+                      className="px-2.5 py-1 rounded-lg bg-gray-900 text-white font-semibold"
+                    >
+                      Stop
+                    </button>
+                  )}
                   {isTimedOutlet && tx.transactionStatus !== 'void' && (
                     <button
                       type="button"
@@ -646,7 +739,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                       Extend
                     </button>
                   )}
-                  {tx.transactionStatus === 'pending' && (
+                  {canEdit && (
                     <button
                       type="button"
                       onClick={() => handleStartEdit(tx)}
@@ -688,9 +781,9 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
       }}
       user={user}
       onOpenProfile={onOpenProfile}
-      onOpenExport={onOpenExport}
       onLogout={onLogout}
       topBanner={topBanner}
+      sidebarExtra={sidebarExtra}
     >
       {editLockError && (
         <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold">
@@ -698,45 +791,90 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Timer Expiration Notification Alerts */}
-      {expiredTimedTxs.length > 0 && (
-        <div className="mb-5 space-y-2">
-          {expiredTimedTxs.map((tx) => (
-            <div
-              key={tx.transactionID}
-              className="p-3.5 rounded-2xl bg-[#FFE27A] border border-[#1A1A1A]/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-            >
-              <div className="flex items-center gap-2.5 text-[#1A1A1A]">
-                <Bell className="w-4 h-4 shrink-0" />
-                <div>
-                  <span className="font-extrabold">Timer expired:</span>{' '}
-                  <span className="font-semibold">
-                    {tx.customerName} ({tx.outletService}) — {tx.transactionID}
-                  </span>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleOpenExtend(tx)}
-                  className="px-3 py-1.5 rounded-xl bg-white text-[#1A1A1A] font-semibold cursor-pointer"
-                >
-                  Extend
-                </button>
-                <button
-                  type="button"
-                  onClick={() => store.acknowledgeTimer(tx.transactionID)}
-                  className="px-3.5 py-1.5 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
-                >
-                  Acknowledge
-                </button>
-              </div>
-            </div>
-          ))}
+      {bannerNotice && (
+        <div
+          className={`mb-4 p-3 rounded-xl border text-xs font-semibold flex items-center justify-between gap-3 ${
+            bannerNotice.type === 'warn'
+              ? 'bg-red-50 border-red-200 text-red-800'
+              : 'bg-[#FFE27A] border-[#1A1A1A]/15 text-[#1A1A1A]'
+          }`}
+        >
+          <span>{bannerNotice.text}</span>
+          <button
+            type="button"
+            onClick={() => setBannerNotice(null)}
+            className="text-xs font-bold opacity-70 hover:opacity-100 cursor-pointer"
+          >
+            ✕
+          </button>
         </div>
       )}
 
-      {/* VIEW MODE: CREATE TRANSACTION (Blocked for F&B per Rev 001) */}
+      {/* UNAVOIDABLE BLOCKING TIMER EXPIRY OVERLAY (Revision 002) */}
+      {expiredTimedTxs.length > 0 && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="expired-timer-heading"
+        >
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-7 border-2 border-[#FF5252] shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-[#FF5252] text-[#1A1A1A] flex items-center justify-center shrink-0">
+                <Bell className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="inline-block px-2 py-0.5 rounded-md bg-[#FFE27A] text-[#1A1A1A] text-[10px] font-extrabold uppercase tracking-wider">
+                  Action Required
+                </span>
+                <h2 id="expired-timer-heading" className="text-lg font-extrabold text-[#1A1A1A] mt-1">
+                  Session Timer Expired
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Acknowledge or extend expired timed sessions before continuing outlet operations.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              {expiredTimedTxs.map((tx) => (
+                <div
+                  key={tx.transactionID}
+                  className="p-4 rounded-2xl bg-[#FFE27A] border border-[#1A1A1A]/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                >
+                  <div>
+                    <div className="font-extrabold text-[#1A1A1A] text-sm">{tx.customerName}</div>
+                    <div className="font-semibold text-[#1A1A1A]/80 mt-0.5">
+                      {tx.outletName} · {tx.outletService}
+                    </div>
+                    <div className="font-mono text-[11px] text-[#1A1A1A]/70 mt-0.5">
+                      {tx.transactionID}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenExtend(tx)}
+                      className="px-3.5 py-2 rounded-xl bg-white text-[#1A1A1A] font-semibold cursor-pointer"
+                    >
+                      Extend
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => store.acknowledgeTimer(tx.transactionID)}
+                      className="px-4 py-2 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
+                    >
+                      Acknowledge
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW MODE: CREATE TRANSACTION */}
       {viewMode === 'create' && outlet.slug !== 'fnb' ? (
         <OutletTransactionForm
           outlet={outlet}
@@ -759,7 +897,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 {outlet.name}
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                {todayFormatted} · {user.role === 'admin' ? 'Front-Desk (Admin)' : `${outlet.name} clerk`}
+                {todayFormatted} · {isFrontDeskAdmin ? 'Front-Desk (Admin)' : `${outlet.name} clerk`}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
@@ -863,7 +1001,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 Void requests
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                Deletion requests sent to Front-Desk (Admin) for approval ({outlet.name})
+                Deletion requests sent to Accountant for approval ({outlet.name})
               </p>
             </div>
             {headerExtra}
@@ -911,75 +1049,46 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
         </div>
       )}
 
-      {/* CASH PAY BALANCE MODAL (Rev 001) */}
-      {cashPayTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl space-y-4">
-            <div>
-              <h3 className="text-base font-extrabold text-[#1A1A1A]">Cash balance settlement</h3>
-              <p className="text-xs text-gray-500 mt-0.5 font-mono">
-                {cashPayTx.transactionID} · {cashPayTx.customerName}
-              </p>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-[#FFE27A] text-[#1A1A1A] space-y-1.5 text-xs">
-              <div className="flex justify-between">
-                <span>Total payable</span>
-                <span className="font-bold tabular-nums">
-                  ₱{cashPayTx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Already paid</span>
-                <span className="font-semibold tabular-nums">
-                  ₱{cashPayTx.amountPaid.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="pt-1.5 border-t border-[#1A1A1A]/15 flex justify-between items-baseline">
-                <span className="font-bold">Cash balance due</span>
-                <span className="text-xl font-extrabold tabular-nums">
-                  ₱{(cashPayTx.balanceDue > 0 ? cashPayTx.balanceDue : cashPayTx.totalAmount).toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 mb-1">
-                Payment cash received by *
-              </label>
-              <input
-                type="text"
-                value={cashReceiverInput}
-                onChange={(e) => setCashReceiverInput(e.target.value)}
-                placeholder="Staff full name"
-                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 text-xs text-[#1A1A1A] outline-none"
-                required
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2.5 pt-1">
-              <button
-                type="button"
-                onClick={() => setCashPayTx(null)}
-                className="py-2.5 px-4 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold text-xs cursor-pointer min-h-[42px]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmCashBalance}
-                className="py-2.5 px-4 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold text-xs cursor-pointer min-h-[42px]"
-              >
-                Confirm Payment
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* INITIAL CASH DOWN PAYMENT MODAL (Rev 002 Two-Step Fix + Void on Cancel) */}
+      {initialCashDownTx && (
+        <InitialDownPaymentCashModal
+          transaction={initialCashDownTx}
+          defaultReceiver={user.name.split(' (')[0]}
+          onConfirmed={(settled) => {
+            setInitialCashDownTx(null);
+            showNotice(
+              'info',
+              `Initial Cash down payment of ₱${settled.toLocaleString('en-PH', {
+                minimumFractionDigits: 2,
+              })} recorded. Remaining balance stays pending.`
+            );
+          }}
+          onCancelledAndVoided={(txId) => {
+            setInitialCashDownTx(null);
+            showNotice('warn', `Transaction ${txId} was voided because initial down payment was cancelled.`);
+          }}
+        />
       )}
 
-      {/* EXTEND SESSION HOURS MODAL (Rev 001) */}
+      {/* PAY REMAINING BALANCE MODAL (Supports Cash / QRPh Mode Switching) */}
+      {payBalanceTx && (
+        <PayBalanceModal
+          transaction={payBalanceTx}
+          defaultReceiver={user.name.split(' (')[0]}
+          onClose={() => setPayBalanceTx(null)}
+          onCashPaid={() => {
+            loadData();
+            showNotice('info', `Payment recorded for ${payBalanceTx.transactionID}.`);
+          }}
+          onLaunchQrPh={(updatedTx) => {
+            setQrModalTx(updatedTx);
+          }}
+        />
+      )}
+
+      {/* EXTEND SESSION HOURS MODAL */}
       {extendTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/75 animate-in fade-in duration-150">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl space-y-4">
             <div>
               <h3 className="text-base font-extrabold text-[#1A1A1A]">Extend session hours</h3>
@@ -1104,14 +1213,14 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 <textarea
                   value={voidNote}
                   onChange={(e) => setVoidNote(e.target.value)}
-                  placeholder="Add a short note for the admin"
+                  placeholder="Add a short note for the Accountant"
                   rows={2}
                   className="w-full px-3 py-2 rounded-xl border border-gray-300 text-[#1A1A1A] outline-none"
                 />
               </div>
 
               <p className="text-[11px] text-gray-500">
-                Sent to Front-Desk (Admin) for approval. The transaction is kept until approved.
+                Sent to Accountant for approval. The transaction is kept until approved.
               </p>
 
               <div className="grid grid-cols-2 gap-2.5 pt-1">
@@ -1134,18 +1243,21 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
         </div>
       )}
 
-      {/* EDIT PENDING TRANSACTION MODAL */}
+      {/* EDIT TRANSACTION MODAL (Clerk Pending Direct OR Front-Desk Accountant Approval Request) */}
       {editingTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100 mb-4">
               <div>
-                <h3 className="text-base font-extrabold text-[#1A1A1A]">Edit pending transaction</h3>
+                <h3 className="text-base font-extrabold text-[#1A1A1A]">
+                  {isFrontDeskAdmin ? 'Request transaction edit' : 'Edit pending transaction'}
+                </h3>
                 <p className="text-[11px] text-gray-500 font-mono">
-                  {editingTx.transactionID} · 120s edit lock active
+                  {editingTx.transactionID}{' '}
+                  {isFrontDeskAdmin ? '· Requires Accountant approval' : '· 120s edit lock active'}
                 </p>
               </div>
-              <button type="button" onClick={handleCancelEdit} className="text-gray-400 hover:text-[#1A1A1A]">
+              <button type="button" onClick={handleCancelEdit} className="text-gray-400 hover:text-[#1A1A1A] cursor-pointer">
                 ✕
               </button>
             </div>
@@ -1198,6 +1310,35 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                   </div>
                 </div>
               </div>
+
+              {isFrontDeskAdmin && (
+                <>
+                  <div>
+                    <label className="block text-gray-600 font-semibold mb-1">Target status</label>
+                    <select
+                      value={editStatus}
+                      onChange={(e) => setEditStatus(e.target.value as TransactionStatus)}
+                      className="w-full p-2.5 rounded-xl border border-gray-300 bg-white"
+                    >
+                      <option value="paid">Paid</option>
+                      <option value="pending">Pending</option>
+                      <option value="void">Void</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-gray-600 font-semibold mb-1">Reason / Audit note *</label>
+                    <textarea
+                      value={editNote}
+                      onChange={(e) => setEditNote(e.target.value)}
+                      placeholder="Explain why this transaction needs adjustment"
+                      rows={2}
+                      className="w-full p-2.5 rounded-xl border border-gray-300"
+                      required
+                    />
+                  </div>
+                </>
+              )}
+
               <div className="p-3 bg-[#FFE27A] rounded-xl flex justify-between font-bold text-[#1A1A1A]">
                 <span>Revised total</span>
                 <span className="tabular-nums">
@@ -1212,7 +1353,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                 <button
                   type="button"
                   onClick={handleCancelEdit}
-                  className="py-2.5 px-4 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold"
+                  className="py-2.5 px-4 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -1220,7 +1361,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
                   type="submit"
                   className="py-2.5 px-4 rounded-xl bg-[#FF5252] text-[#1A1A1A] font-bold cursor-pointer"
                 >
-                  Save changes
+                  {isFrontDeskAdmin ? 'Submit for approval' : 'Save changes'}
                 </button>
               </div>
             </form>
@@ -1228,144 +1369,23 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
         </div>
       )}
 
-      {/* FULL TRANSACTION & RELATIONAL DETAILS MODAL (Rev 001) */}
+      {/* UNIVERSAL TRANSACTION DETAILS MODAL (EYE ICON) */}
       {detailTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75">
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 border border-gray-200 shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <div>
-                <h3 className="text-base font-extrabold text-[#1A1A1A]">Transaction details</h3>
-                <p className="text-[11px] text-gray-500 font-mono">
-                  {detailTx.tx.transactionID} → {detailTx.tx.outletRefTable} ({detailTx.tx.outletRefId})
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDetailTx(null)}
-                className="text-gray-400 hover:text-[#1A1A1A] cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Live Timer Readout inside Transaction Details */}
-            {detailTx.tx.timerEndsAt && (
-              <div className="p-3.5 rounded-2xl bg-[#FFE27A] text-[#1A1A1A] flex items-center justify-between">
-                <span className="text-xs font-bold flex items-center gap-1.5">
-                  <Timer className="w-4 h-4" />
-                  Remaining session time
-                </span>
-                <span className="font-mono text-base font-extrabold tabular-nums">
-                  {formatRemainingCountdown(detailTx.tx.timerEndsAt, nowMs).isExpired
-                    ? '00:00:00 (Expired)'
-                    : formatRemainingCountdown(detailTx.tx.timerEndsAt, nowMs).label}
-                </span>
-              </div>
-            )}
-
-            {/* Master Summary Fields */}
-            <div className="bg-[#F7F7F7] rounded-2xl p-4 space-y-1.5 text-xs">
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Customer</span>
-                <span className="font-bold text-[#1A1A1A] text-right">{detailTx.tx.customerName}</span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Service</span>
-                <span className="font-bold text-[#1A1A1A] text-right">{detailTx.tx.outletService}</span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Selling Price</span>
-                <span className="font-bold text-[#1A1A1A] tabular-nums">
-                  ₱{detailTx.tx.transactionAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Discount ({detailTx.tx.discountApplied ? 'Yes' : 'No'})</span>
-                <span className="font-bold text-[#1A1A1A] tabular-nums">
-                  -₱{detailTx.tx.discount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Total Payable</span>
-                <span className="font-extrabold text-[#1A1A1A] tabular-nums">
-                  ₱{detailTx.tx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Amount Paid / Balance Due</span>
-                <span className="font-bold text-[#1A1A1A] tabular-nums">
-                  ₱{detailTx.tx.amountPaid.toFixed(2)} /{' '}
-                  <span className={detailTx.tx.balanceDue > 0 ? 'text-[#FF5252]' : 'text-emerald-700'}>
-                    ₱{detailTx.tx.balanceDue.toFixed(2)}
-                  </span>
-                </span>
-              </div>
-              <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                <span className="text-gray-500">Payment Channel / Arrangement</span>
-                <span className="font-bold text-[#1A1A1A]">
-                  {detailTx.tx.paymentChannel} · {detailTx.tx.paymentArrangement}
-                </span>
-              </div>
-              {detailTx.tx.cashReceivedBy && (
-                <div className="flex justify-between gap-4 border-b border-gray-200/70 pb-1">
-                  <span className="text-gray-500">Cash Received By</span>
-                  <span className="font-bold text-[#1A1A1A]">{detailTx.tx.cashReceivedBy}</span>
-                </div>
-              )}
-              <div className="flex justify-between gap-4">
-                <span className="text-gray-500">Handled By</span>
-                <span className="font-medium text-[#1A1A1A]">{detailTx.tx.employeeHandler}</span>
-              </div>
-            </div>
-
-            {/* Child Table Specific Attributes */}
-            <div className="bg-[#F7F7F7] rounded-2xl p-4 space-y-1.5 font-mono text-xs">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
-                Outlet-Specific Details ({detailTx.tx.outletRefTable})
-              </div>
-              {detailTx.childData ? (
-                Object.entries(detailTx.childData).map(([k, v]) => (
-                  <div
-                    key={k}
-                    className="flex justify-between gap-4 border-b border-gray-200/70 pb-1 last:border-0"
-                  >
-                    <span className="text-gray-500">{formatFieldLabel(k)}</span>
-                    <span className="font-bold text-[#1A1A1A] text-right max-w-xs break-words">
-                      {Array.isArray(v)
-                        ? v
-                            .map((item: any) =>
-                              typeof item === 'object'
-                                ? `${item.quantity}× ${item.name}${item.variant ? ` (${item.variant})` : ''}`
-                                : String(item)
-                            )
-                            .join(', ')
-                        : typeof v === 'object' && v !== null
-                        ? JSON.stringify(v)
-                        : String(v)}
-                    </span>
-                  </div>
-                ))
-              ) : (
-                <div className="text-gray-400">Child record linked.</div>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setDetailTx(null)}
-              className="w-full py-2.5 rounded-xl bg-[#1A1A1A] text-white text-xs font-bold cursor-pointer"
-            >
-              Close
-            </button>
-          </div>
-        </div>
+        <TransactionDetailsModal transaction={detailTx} onClose={() => setDetailTx(null)} />
       )}
 
       {qrModalTx && (
         <QrPhModal
           transaction={qrModalTx}
           onClose={() => setQrModalTx(null)}
-          onSuccess={() => loadData()}
+          onSuccess={(msg) => {
+            loadData();
+            if (msg) showNotice('info', msg);
+          }}
+          onVoidCancelledInitial={(txId) => {
+            loadData();
+            showNotice('warn', `Transaction ${txId} was voided because initial QR Ph down payment was cancelled.`);
+          }}
         />
       )}
 

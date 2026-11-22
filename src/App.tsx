@@ -1,6 +1,6 @@
 /**
  * Cafe Lupe Centralized Sales Report and Transaction Gateway System
- * Root Application Container (Revision 001)
+ * Root Application Container (Revision 002)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -11,7 +11,6 @@ import { PendingApprovalView } from './components/auth/PendingApprovalView';
 import { OutletWorkspace } from './components/outlets/OutletWorkspace';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AccountantDashboard } from './components/accountant/AccountantDashboard';
-import { PhpSqlExportModal } from './components/common/PhpSqlExportModal';
 import { ProfileModal } from './components/common/ProfileModal';
 import { ArrowLeft, ChevronDown } from 'lucide-react';
 
@@ -30,7 +29,6 @@ export default function App() {
 
   const [prefillLoginEmail, setPrefillLoginEmail] = useState('');
   const [activeFrontDeskOutletSlug, setActiveFrontDeskOutletSlug] = useState<OutletSlug | null>(null);
-  const [showExportModal, setShowExportModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
 
   useEffect(() => {
@@ -116,32 +114,35 @@ export default function App() {
 
   const frontDeskOutlets = store.getFrontDeskOutlets();
 
-  const frontDeskOutletsSwitcher =
+  const frontDeskSidebarOutletSelector =
     currentUser.role === 'admin' && activeFrontDeskOutlet ? (
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setActiveFrontDeskOutletSlug(null)}
-          className="px-3.5 py-2.5 rounded-xl bg-white border border-gray-300 hover:bg-gray-50 text-[#1A1A1A] text-xs font-semibold flex items-center gap-1.5 cursor-pointer min-h-[42px]"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" />
-          Front-Desk
-        </button>
+      <div className="px-1 pt-0.5 space-y-2">
+        <div className="px-2.5 text-[10px] font-extrabold uppercase tracking-wider text-[#1A1A1A]/60">
+          Outlet Selector
+        </div>
         <div className="relative">
           <select
             value={activeFrontDeskOutlet.slug}
             onChange={(e) => setActiveFrontDeskOutletSlug(e.target.value as OutletSlug)}
-            aria-label="Outlets"
-            className="px-4 py-2.5 pr-9 rounded-xl bg-[#FFE27A] hover:bg-[#fed650] text-[#1A1A1A] font-bold text-xs appearance-none cursor-pointer outline-none min-h-[42px]"
+            aria-label="Outlet Selector"
+            className="w-full px-3.5 py-2.5 pr-8 rounded-xl bg-white/90 hover:bg-white text-[#1A1A1A] font-bold text-xs appearance-none cursor-pointer outline-none border border-[#1A1A1A]/10 shadow-2xs"
           >
             {frontDeskOutlets.map((o) => (
               <option key={o.id} value={o.slug} className="bg-white text-[#1A1A1A]">
-                Outlets: {o.name}
+                {o.name}
               </option>
             ))}
           </select>
-          <ChevronDown className="w-4 h-4 text-[#1A1A1A] absolute right-3 top-3 pointer-events-none" />
+          <ChevronDown className="w-4 h-4 text-[#1A1A1A] absolute right-2.5 top-2.5 pointer-events-none" />
         </div>
+        <button
+          type="button"
+          onClick={() => setActiveFrontDeskOutletSlug(null)}
+          className="w-full px-3.5 py-2 rounded-xl bg-white/60 hover:bg-white text-[#1A1A1A] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          Back to Front-Desk
+        </button>
       </div>
     ) : undefined;
 
@@ -152,23 +153,20 @@ export default function App() {
           outlet={activeFrontDeskOutlet}
           user={currentUser}
           onOpenProfile={() => setShowProfileModal(true)}
-          onOpenExport={() => setShowExportModal(true)}
           onLogout={handleLogout}
-          headerExtra={frontDeskOutletsSwitcher}
+          sidebarExtra={frontDeskSidebarOutletSelector}
         />
       ) : currentUser.role === 'admin' ? (
         <AdminDashboard
           adminUser={currentUser}
           onSelectOutlet={(slug) => setActiveFrontDeskOutletSlug(slug)}
           onOpenProfile={() => setShowProfileModal(true)}
-          onOpenExport={() => setShowExportModal(true)}
           onLogout={handleLogout}
         />
       ) : currentUser.role === 'accountant' ? (
         <AccountantDashboard
           user={currentUser}
           onOpenProfile={() => setShowProfileModal(true)}
-          onOpenExport={() => setShowExportModal(true)}
           onLogout={handleLogout}
         />
       ) : (
@@ -176,12 +174,10 @@ export default function App() {
           outlet={userOutlet}
           user={currentUser}
           onOpenProfile={() => setShowProfileModal(true)}
-          onOpenExport={() => setShowExportModal(true)}
           onLogout={handleLogout}
         />
       )}
 
-      {showExportModal && <PhpSqlExportModal onClose={() => setShowExportModal(false)} />}
       {showProfileModal && (
         <ProfileModal
           user={currentUser}
