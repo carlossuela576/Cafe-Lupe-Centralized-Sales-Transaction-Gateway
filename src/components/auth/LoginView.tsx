@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../../types';
 import { store } from '../../db/store';
-import { ChevronDown, ChevronUp, Key, CheckCircle2, Clock, XCircle, Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, Key, CheckCircle2, Clock, XCircle, Search, Eye, EyeOff } from 'lucide-react';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User) => void;
@@ -20,6 +20,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCredsDrawer, setShowCredsDrawer] = useState(false);
 
@@ -27,6 +28,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPass, setRegPass] = useState('');
+  const [showRegPassword, setShowRegPassword] = useState(false);
   const [regRoleChoice, setRegRoleChoice] = useState<RetainedRoleChoice>('gym');
 
   // Approval status lookup state
@@ -197,14 +199,25 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
 
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1.5">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 focus:border-[#1A1A1A] text-sm sm:text-xs text-[#1A1A1A] bg-white outline-none transition-colors"
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••••"
+                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl border border-gray-300 focus:border-[#1A1A1A] text-sm sm:text-xs text-[#1A1A1A] bg-white outline-none transition-colors"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-gray-400 hover:text-[#1A1A1A] cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div className="pt-2 space-y-2.5">
@@ -300,14 +313,25 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, initialEma
 
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={regPass}
-                  onChange={(e) => setRegPass(e.target.value)}
-                  placeholder="••••••••••"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 focus:border-[#1A1A1A] text-sm sm:text-xs text-[#1A1A1A] bg-white outline-none"
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type={showRegPassword ? 'text' : 'password'}
+                    value={regPass}
+                    onChange={(e) => setRegPass(e.target.value)}
+                    placeholder="••••••••••"
+                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl border border-gray-300 focus:border-[#1A1A1A] text-sm sm:text-xs text-[#1A1A1A] bg-white outline-none"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowRegPassword((prev) => !prev)}
+                    aria-label={showRegPassword ? 'Hide password' : 'Show password'}
+                    title={showRegPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-gray-400 hover:text-[#1A1A1A] cursor-pointer"
+                  >
+                    {showRegPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <p className="text-[11px] text-gray-500 pt-1">

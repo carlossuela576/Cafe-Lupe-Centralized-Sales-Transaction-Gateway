@@ -26,6 +26,8 @@ import {
   PaymentInstallment,
   AiAuditLog,
   ReconciliationBatch,
+  CalendarEventRecord,
+  CalendarEventCategory,
   TransactionStatus,
   PaymentArrangement,
   PaymentChannel,
@@ -51,6 +53,7 @@ import {
   INITIAL_CASH_CONFIRMATIONS,
   INITIAL_VOID_REQUESTS,
   INITIAL_INSTALLMENTS,
+  INITIAL_CALENDAR_EVENTS,
 } from './initialData';
 
 const STORAGE_PREFIX = 'cafelupe_v3_rev002_';
@@ -137,8 +140,44 @@ export class CafeLupeStore {
   private editRequests: EditRequest[] = loadFromStorage('edit_requests', []);
   private aiAuditLogs: AiAuditLog[] = loadFromStorage('ai_audit_logs', []);
   private reconciliationBatches: ReconciliationBatch[] = loadFromStorage('reconciliation_batches', []);
+  private calendarEvents: CalendarEventRecord[] = loadFromStorage('calendar_events', INITIAL_CALENDAR_EVENTS);
 
   private listeners: Set<() => void> = new Set();
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', (event) => {
+        if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
+        this.reloadAllFromStorage();
+        this.listeners.forEach((l) => l());
+      });
+    }
+  }
+
+  private reloadAllFromStorage(): void {
+    this.users = loadFromStorage('users', INITIAL_USERS);
+    this.outlets = loadFromStorage('outlets', INITIAL_OUTLETS);
+    this.services = loadFromStorage('services', INITIAL_SERVICES);
+    this.transactions = loadFromStorage('transactions', INITIAL_TRANSACTIONS);
+    this.installments = loadFromStorage('installments', INITIAL_INSTALLMENTS);
+    this.pickleballRows = loadFromStorage('pickleball', INITIAL_PICKLEBALL_ROWS);
+    this.hostelRows = loadFromStorage('hostel', INITIAL_HOSTEL_ROWS);
+    this.gymRows = loadFromStorage('gym', INITIAL_GYM_ROWS);
+    this.poolRows = loadFromStorage('pool', INITIAL_POOL_ROWS);
+    this.ktvRows = loadFromStorage('ktv', INITIAL_KTV_ROWS);
+    this.fnbRows = loadFromStorage('fnb', INITIAL_FNB_ROWS);
+    this.billiardsRows = loadFromStorage('billiards', INITIAL_BILLIARDS_ROWS);
+    this.tableTennisRows = loadFromStorage('tabletennis', INITIAL_TABLETENNIS_ROWS);
+    this.parkingRows = loadFromStorage('parking', INITIAL_PARKING_ROWS);
+    this.eventsRows = loadFromStorage('events', INITIAL_EVENTS_ROWS);
+    this.genericRows = loadFromStorage('generic', []);
+    this.cashConfirmations = loadFromStorage('cash_confirmations', INITIAL_CASH_CONFIRMATIONS);
+    this.voidRequests = loadFromStorage('void_requests', INITIAL_VOID_REQUESTS);
+    this.editRequests = loadFromStorage('edit_requests', []);
+    this.aiAuditLogs = loadFromStorage('ai_audit_logs', []);
+    this.reconciliationBatches = loadFromStorage('reconciliation_batches', []);
+    this.calendarEvents = loadFromStorage('calendar_events', INITIAL_CALENDAR_EVENTS);
+  }
 
   public subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -167,6 +206,7 @@ export class CafeLupeStore {
     saveToStorage('edit_requests', this.editRequests);
     saveToStorage('ai_audit_logs', this.aiAuditLogs);
     saveToStorage('reconciliation_batches', this.reconciliationBatches);
+    saveToStorage('calendar_events', this.calendarEvents);
 
     this.listeners.forEach((l) => l());
   }
@@ -1336,6 +1376,59 @@ export class CafeLupeStore {
     return entry;
   }
 
+  // --- Centralized Sync Calendar Events (Revision 003) ---
+  public getCalendarEvents(outletSlug?: OutletSlug | 'all'): CalendarEventRecord[] {
+    if (!outletSlug || outletSlug === 'all') return [...this.calendarEvents];
+    return this.calendarEvents.filter((c) => c.outletSlug === outletSlug);
+  }
+
+  public addCalendarEvent(input: {
+    outletSlug: OutletSlug;
+    outletName: string;
+    title: string;
+    customerName: string;
+    category: CalendarEventCategory;
+    start: string;
+    end?: string | null;
+    allDay: boolean;
+    notes?: string;
+    createdBy: string;
+  }): CalendarEventRecord {
+    const entry: CalendarEventRecord = {
+      calendarID: `cal-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      outletSlug: input.outletSlug,
+      outletName: input.outletName,
+      title: input.title.trim(),
+      customerName: input.customerName.trim(),
+      category: input.category,
+      start: input.start,
+      end: input.end || null,
+      allDay: input.allDay,
+      notes: input.notes?.trim() || '',
+      status: 'scheduled',
+      createdBy: input.createdBy,
+      createdAt: new Date().toISOString(),
+    };
+    this.calendarEvents.unshift(entry);
+    this.notify();
+    return entry;
+  }
+
+  public updateCalendarEventStatus(
+    calendarID: string,
+    status: CalendarEventRecord['status']
+  ): void {
+    this.calendarEvents = this.calendarEvents.map((ev) =>
+      ev.calendarID === calendarID ? { ...ev, status } : ev
+    );
+    this.notify();
+  }
+
+  public deleteCalendarEvent(calendarID: string): void {
+    this.calendarEvents = this.calendarEvents.filter((ev) => ev.calendarID !== calendarID);
+    this.notify();
+  }
+
   public resetToFactory(): void {
     localStorage.clear();
     this.users = [...INITIAL_USERS];
@@ -1359,6 +1452,7 @@ export class CafeLupeStore {
     this.editRequests = [];
     this.aiAuditLogs = [];
     this.reconciliationBatches = [];
+    this.calendarEvents = [...INITIAL_CALENDAR_EVENTS];
     this.notify();
   }
 
@@ -1470,6 +1564,22 @@ CREATE TABLE IF NOT EXISTS \`reconciliation_batches\` (
   \`extracted_entries_json\` JSON NULL,
   \`comparison_results_json\` JSON NULL,
   \`overall_status\` ENUM('matched', 'conflict') NOT NULL,
+  \`created_by\` VARCHAR(100) NOT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS \`calendar_events\` (
+  \`calendarID\` VARCHAR(50) PRIMARY KEY,
+  \`outlet_slug\` VARCHAR(50) NOT NULL,
+  \`outlet_name\` VARCHAR(100) NOT NULL,
+  \`title\` VARCHAR(150) NOT NULL,
+  \`customer_name\` VARCHAR(150) NOT NULL,
+  \`category\` ENUM('Booking', 'Reservation', 'Tournament', 'Maintenance', 'Function') NOT NULL DEFAULT 'Booking',
+  \`start_at\` DATETIME NOT NULL,
+  \`end_at\` DATETIME NULL,
+  \`all_day\` TINYINT(1) NOT NULL DEFAULT 0,
+  \`notes\` TEXT NULL,
+  \`status\` ENUM('scheduled', 'ongoing', 'completed', 'cancelled') NOT NULL DEFAULT 'scheduled',
   \`created_by\` VARCHAR(100) NOT NULL,
   \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;

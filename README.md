@@ -4,10 +4,18 @@ A full-stack responsive web application for **Cafe Lupe** that centralizes trans
 
 ---
 
-## Key Features (Revision 002)
+## Key Features (Revision 003)
 
-- **Single Unified Login & Role Routing**
-  - Routes staff directly to their assigned portal based on credentials: **Front-Desk (Admin)**, **Accountant**, **Gym & Combat Training**, or **Restaurant / F&B POS**.
+- **Centralized Multi-Outlet Sync Calendar (`@fullcalendar/react`)**
+  - Embedded across the **Front-Desk Dashboard** and **every individual outlet dashboard** (`Gym`, `F&B POS`, and all 9 merged outlets), synchronized in real time across views and browser tabs.
+  - Defaults to **`General`** (all outlets combined) with outlet filtering to isolate any outlet, projecting outlet transactions/bookings/timers alongside custom scheduled events (`calendar_events`).
+- **Front-Desk Executive Dashboard & Master Ledger Migration**
+  - **Master Ledger** moves `Central transactions` into its own dedicated link in the left gold sidebar directly below `Dashboard`.
+  - **Global Privacy Eye Toggle** in the Front-Desk header masks all money and numerical values across Header Cards, KPIs, charts, and timer amounts into `*****`.
+  - **Rolling Timer Cards & Global Expiry Overlay:** Live countdowns (`customer name`, `outlet name`, `remaining time`) sit directly on the Front-Desk Dashboard, and an unavoidable **Session Timer Expired** alert modal overlays the entire Front-Desk interface regardless of active tab or outlet view.
+  - **KPI Cards & Visual Charts:** `Outstanding Balances`, `Collection Rate`, `Average Ticket`, `Top Outlet`, plus `Top Outlets Sales` bar chart, `Sales Distribution` donut chart, and `7-Day Sales Trend` line graph.
+- **Single Unified Login & Password Visibility**
+  - Routes staff directly to their assigned portal based on credentials: **Front-Desk (Admin)**, **Accountant**, **Gym & Combat Training**, or **Restaurant / F&B POS**, now with a **Show / Hide Password** eye icon toggle.
   - Supports new staff registration with email approval status lookup and Front-Desk account approval controls.
 - **Two-Step Down Payment Billing & Mode Switching**
   - Both **Cash** and **QR Ph** `Down Payment` arrangements require explicit initial down-payment collection (`amountPaid = 0` initially), keeping the transaction `pending` with only the remaining balance left payable.
@@ -34,9 +42,9 @@ A full-stack responsive web application for **Cafe Lupe** that centralizes trans
 
 ## Tech Stack
 
-- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React, `jsPDF`
+- **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, `@fullcalendar/react` v7, Lucide React, `jsPDF`
 - **Backend Proxy:** Node.js, Express 5 (`tsx server.ts`), `@google/genai` (`GEMINI_API_KEY` kept strictly server-side)
-- **Persistence:** Normalized local relational store (`localStorage` + concurrency edit locks) paired with developer MySQL DDL & PHP PDO artifacts in `src/db/store.ts` (hidden from end-user UI)
+- **Persistence:** Normalized local relational store (`localStorage` + cross-tab `storage` sync + concurrency edit locks) paired with developer MySQL DDL & PHP PDO artifacts in `src/db/store.ts` (hidden from end-user UI)
 
 ---
 
@@ -110,15 +118,18 @@ src/
     │   ├── LoginView.tsx                  # Unified sign-in, registration, and email approval lookup
     │   └── PendingApprovalView.tsx        # Pending account status screen
     ├── admin/
-    │   └── AdminDashboard.tsx             # Front-Desk overview, sidebar Outlet Selector, Approvals, Outlets setup
+    │   ├── AdminDashboard.tsx             # Front-Desk Dashboard, Master Ledger tab, Privacy toggle, Approvals, Outlets
+    │   └── FrontDeskKpiSection.tsx        # Rolling timer & alert cards + KPI metrics & SVG visualizations
     ├── accountant/
     │   ├── AccountantDashboard.tsx        # Summary, History (Cash/QRPh + search), Approvals, 5 AI sidebar routes
     │   └── AccountantAiViews.tsx          # Deposit Validation, Financial Analysis, Forecasting, Advisor, Recon
     ├── outlets/
-    │   ├── OutletWorkspace.tsx            # Outlet dashboard, Stop timer, blocking expiry overlay, Pay Balance
+    │   ├── OutletWorkspace.tsx            # Outlet dashboard + CentralizedCalendar, Stop timer, Pay Balance
     │   ├── OutletTransactionForm.tsx      # Outlet-specific transaction forms with real-time calculation
     │   └── PosTerminal.tsx                # F&B POS terminal (Full Payment, SC/PWD Pax & Valid ID formula)
     └── common/
+        ├── CentralizedCalendar.tsx        # FullCalendar v7 multi-outlet sync calendar with General/outlet filters
+        ├── GlobalTimerAlertOverlay.tsx    # Global Front-Desk expired timer blocking alert overlay
         ├── SidebarShell.tsx               # Responsive desktop rail + mobile drawer with dividers
         ├── TransactionDetailsModal.tsx    # Universal Eye modal (date/time, split payment modes, child data)
         ├── PaymentWorkflowModals.tsx      # Initial Cash Down Payment notice/void & Pay Balance mode switcher

@@ -6,13 +6,16 @@ import {
   OutletSlug,
   TransactionStatus,
 } from '../../types';
-import { store } from '../../db/store';
+import { store, calculateDiscountBreakdown } from '../../db/store';
 import { SidebarShell, SidebarNavItem } from '../common/SidebarShell';
 import { StatTile } from '../common/StatTile';
 import { StatusChip } from '../common/StatusChip';
 import { TransactionDetailsModal } from '../common/TransactionDetailsModal';
+import { CentralizedCalendar } from '../common/CentralizedCalendar';
+import { FrontDeskTimerBoard, FrontDeskKpiGrid } from './FrontDeskKpiSection';
 import {
   LayoutGrid,
+  BookOpen,
   UserCheck,
   Building2,
   Edit3,
@@ -20,6 +23,7 @@ import {
   Plus,
   ChevronDown,
   Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -35,19 +39,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onOpenProfile,
   onLogout,
 }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'approvals' | 'outlets'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'ledger' | 'approvals' | 'outlets'>('dashboard');
+  const [isPrivacyHidden, setIsPrivacyHidden] = useState(false);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const [transactions, setTransactions] = useState<MasterTransaction[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [outlets, setOutlets] = useState<Outlet[]>([]);
   const [bannerNotice, setBannerNotice] = useState<string | null>(null);
 
-  // Filtering
+  // Filtering (Master Ledger)
   const [txStatusFilter, setTxStatusFilter] = useState<'all' | TransactionStatus>('all');
+  const [txOutletFilter, setTxOutletFilter] = useState<'all' | string>('all');
   const [txSearch, setTxSearch] = useState('');
 
   // Transaction Details (Eye icon)
   const [detailTx, setDetailTx] = useState<MasterTransaction | null>(null);
+
+  // Extend Timer Modal from Dashboard Rolling Timers
+  const [extendTx, setExtendTx] = useState<MasterTransaction | null>(null);
+  const [extendHours, setExtendHours] = useState<number>(1);
 
   // Edit Request modal (Front-Desk -> Accountant Approval per Rev 002)
   const [editingTx, setEditingTx] = useState<MasterTransaction | null>(null);
@@ -82,7 +93,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     loadData();
     const unsub = store.subscribe(() => loadData());
-    return () => unsub();
+    const ticker = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => {
+      unsub();
+      window.clearInterval(ticker);
+    };
   }, []);
 
   const showNotice = (msg: string) => {
@@ -112,20 +127,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const filteredTransactions = transactions.filter((t) => {
     const matchesStatus = txStatusFilter === 'all' || t.transactionStatus === txStatusFilter;
+    const matchesOutlet = txOutletFilter === 'all' || t.outletSlug === txOutletFilter;
     const matchesSearch =
       !txSearch ||
       t.transactionID.toLowerCase().includes(txSearch.toLowerCase()) ||
       t.customerName.toLowerCase().includes(txSearch.toLowerCase()) ||
       t.outletName.toLowerCase().includes(txSearch.toLowerCase()) ||
       t.outletService.toLowerCase().includes(txSearch.toLowerCase());
-    return matchesStatus && matchesSearch;
+    return matchesStatus && matchesOutlet && matchesSearch;
   });
 
   const navItems: SidebarNavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid },
+    { id: 'ledger', label: 'Master Ledger', icon: BookOpen },
     { id: 'approvals', label: 'Approvals', icon: UserCheck, badge: pendingUsers.length },
     { id: 'outlets', label: 'Outlets', icon: Building2 },
   ];
+
+  const handleConfirmExtend = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!extendTx || extendHours <= 0) return;
+    store.extendTimedTransaction(extendTx.transactionID, extendHours);
+    showNotice(`Extended ${extendTx.customerName} (${extendTx.outletName}) by +${extendHours} hr.`);
+    setExtendTx(null);
+  };
 
   const handleSubmitFrontDeskEditRequest = (e: React.FormEvent) => {
     e.preventDefault();
@@ -234,7 +259,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB 1: DASHBOARD */}
+      {/* TAB 1: FRONT-DESK DASHBOARD (Header Cards + Privacy Toggle + Timers + KPIs + Sync Calendar) */}
       {activeTab === 'dashboard' && (
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -244,36 +269,88 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">All outlets · {todayFormatted}</p>
             </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPrivacyHidden((prev) => !prev)}
+                aria-label={isPrivacyHidden ? 'Show financial values' : 'Hide financial values'}
+                title={isPrivacyHidden ? 'Show dashboard numbers' : 'Mask dashboard numbers'}
+                className={`px-3.5 py-2 rounded-xl border text-xs font-bold inline-flex items-center gap-2 cursor-pointer transition-colors ${
+                  isPrivacyHidden
+                    ? 'bg-[#1A1A1A] border-[#1A1A1A] text-white'
+                    : 'bg-white border-gray-300 text-[#1A1A1A] hover:bg-gray-50'
+                }`}
+              >
+                {isPrivacyHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                <span>{isPrivacyHidden ? 'Values hidden' : 'Hide values'}</span>
+              </button>
+            </div>
           </div>
 
-          {/* 4-Tile Strip */}
+          {/* 4-Tile Header Cards (Masked with ***** when privacy toggle is active) */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatTile
               label="All outlets today"
-              value={`₱${totalGrossSales.toLocaleString()}`}
-              sub={`${transactions.length} transactions`}
+              value={isPrivacyHidden ? '*****' : `₱${totalGrossSales.toLocaleString()}`}
+              sub={isPrivacyHidden ? '***** transactions' : `${transactions.length} transactions`}
               isHighlight={true}
             />
             <StatTile
               label="Pending accounts"
-              value={pendingUsers.length}
+              value={isPrivacyHidden ? '*****' : pendingUsers.length}
               sub="New staff approvals"
             />
             <StatTile
               label="Pending balances"
-              value={`₱${pendingBalancesTotal.toLocaleString()}`}
-              sub={`${pendingCount} open tickets`}
+              value={isPrivacyHidden ? '*****' : `₱${pendingBalancesTotal.toLocaleString()}`}
+              sub={isPrivacyHidden ? '***** open tickets' : `${pendingCount} open tickets`}
             />
             <StatTile
               label="Managed outlets"
-              value={frontDeskOutlets.length}
+              value={isPrivacyHidden ? '*****' : frontDeskOutlets.length}
               sub="Use sidebar selector"
             />
           </div>
 
-          {/* Central Transactions Table */}
+          {/* Timer Alert Cards & Active Rolling Timers */}
+          <FrontDeskTimerBoard
+            transactions={transactions}
+            nowMs={nowMs}
+            isPrivacyHidden={isPrivacyHidden}
+            onExtendTimer={(tx) => {
+              setExtendHours(1);
+              setExtendTx(tx);
+            }}
+          />
+
+          {/* Executive KPI Cards & Visualizations */}
+          <FrontDeskKpiGrid
+            transactions={transactions}
+            outlets={outlets}
+            isPrivacyHidden={isPrivacyHidden}
+          />
+
+          {/* Centralized Multi-Outlet Sync Calendar (Defaults to General) */}
+          <CentralizedCalendar currentUser={adminUser} />
+        </div>
+      )}
+
+      {/* TAB 2: MASTER LEDGER (Migrated Central Transactions) */}
+      {activeTab === 'ledger' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-extrabold tracking-tight text-[#1A1A1A]">
+                Master Ledger
+              </h1>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Centralized transactions across all Cafe Lupe outlets · {todayFormatted}
+              </p>
+            </div>
+          </div>
+
           <div className="bg-white rounded-2xl border border-gray-200/90 overflow-hidden">
-            <div className="p-4 sm:px-6 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-4 sm:px-6 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div className="text-sm font-bold text-[#1A1A1A]">Central transactions</div>
               <div className="flex flex-wrap items-center gap-2">
                 <input
@@ -283,6 +360,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   placeholder="Search ID, customer, outlet..."
                   className="px-3 py-1.5 rounded-xl border border-gray-200 text-xs text-[#1A1A1A] outline-none w-48"
                 />
+                <div className="relative">
+                  <select
+                    value={txOutletFilter}
+                    onChange={(e) => setTxOutletFilter(e.target.value)}
+                    aria-label="Filter Master Ledger by outlet"
+                    className="pl-3 pr-7 py-1.5 rounded-xl border border-gray-200 bg-white text-xs font-semibold text-[#1A1A1A] appearance-none cursor-pointer outline-none"
+                  >
+                    <option value="all">All outlets</option>
+                    {outlets.map((o) => (
+                      <option key={o.id} value={o.slug}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-gray-500 absolute right-2 top-2 pointer-events-none" />
+                </div>
                 <div className="inline-flex p-1 bg-gray-100 rounded-xl gap-0.5">
                   {(['all', 'paid', 'pending', 'void'] as const).map((st) => (
                     <button
@@ -316,73 +409,81 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-xs">
-                  {filteredTransactions.map((tx) => (
-                    <tr key={tx.transactionID} className="hover:bg-gray-50/70 transition-colors">
-                      <td className="py-3.5 px-6 font-mono text-gray-500 whitespace-nowrap">
-                        {tx.transactionID}
-                      </td>
-                      <td className="py-3.5 px-4 font-bold text-[#1A1A1A]">{tx.customerName}</td>
-                      <td className="py-3.5 px-4 text-gray-600 max-w-xs truncate">
-                        <span className="font-semibold text-[#1A1A1A]">{tx.outletName.split(' ')[0]}</span> ·{' '}
-                        {tx.outletService}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-bold text-[#1A1A1A] tabular-nums whitespace-nowrap">
-                        ₱{tx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <StatusChip status={tx.transactionStatus} size="sm" />
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-500 whitespace-nowrap tabular-nums">
-                        {new Date(tx.transactionDateTime).toLocaleTimeString([], {
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        })}
-                      </td>
-                      <td className="py-3.5 px-6 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setDetailTx(tx)}
-                            className="p-1.5 rounded-lg text-gray-500 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
-                            title="View transaction details"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                          {tx.transactionStatus !== 'void' && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingTx(tx);
-                                setEditAmount(tx.transactionAmount);
-                                setEditDiscount(tx.discount);
-                                setEditStatus(tx.transactionStatus);
-                                setEditCustomer(tx.customerName);
-                                setEditNote('');
-                              }}
-                              className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
-                              title="Request transaction edit (Accountant approval)"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                          {tx.transactionStatus !== 'void' && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setVoidingTx(tx);
-                                setVoidReason('Customer cancelled');
-                                setVoidNote('');
-                              }}
-                              className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
-                              title="Request void (Accountant approval)"
-                            >
-                              <XCircle className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
+                  {filteredTransactions.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-10 text-center text-gray-400">
+                        No transactions match the current filters.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredTransactions.map((tx) => (
+                      <tr key={tx.transactionID} className="hover:bg-gray-50/70 transition-colors">
+                        <td className="py-3.5 px-6 font-mono text-gray-500 whitespace-nowrap">
+                          {tx.transactionID}
+                        </td>
+                        <td className="py-3.5 px-4 font-bold text-[#1A1A1A]">{tx.customerName}</td>
+                        <td className="py-3.5 px-4 text-gray-600 max-w-xs truncate">
+                          <span className="font-semibold text-[#1A1A1A]">{tx.outletName.split(' ')[0]}</span> ·{' '}
+                          {tx.outletService}
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-bold text-[#1A1A1A] tabular-nums whitespace-nowrap">
+                          ₱{tx.totalAmount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3.5 px-4 text-center">
+                          <StatusChip status={tx.transactionStatus} size="sm" />
+                        </td>
+                        <td className="py-3.5 px-4 text-gray-500 whitespace-nowrap tabular-nums">
+                          {new Date(tx.transactionDateTime).toLocaleTimeString([], {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                          })}
+                        </td>
+                        <td className="py-3.5 px-6 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDetailTx(tx)}
+                              className="p-1.5 rounded-lg text-gray-500 hover:text-[#1A1A1A] hover:bg-gray-100 cursor-pointer"
+                              title="View transaction details"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            {tx.transactionStatus !== 'void' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingTx(tx);
+                                  setEditAmount(tx.transactionAmount);
+                                  setEditDiscount(tx.discount);
+                                  setEditStatus(tx.transactionStatus);
+                                  setEditCustomer(tx.customerName);
+                                  setEditNote('');
+                                }}
+                                className="p-1.5 rounded-lg text-gray-600 hover:bg-gray-100 cursor-pointer"
+                                title="Request transaction edit (Accountant approval)"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {tx.transactionStatus !== 'void' && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setVoidingTx(tx);
+                                  setVoidReason('Customer cancelled');
+                                  setVoidNote('');
+                                }}
+                                className="p-1.5 rounded-lg text-red-600 hover:bg-red-50 cursor-pointer"
+                                title="Request void (Accountant approval)"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -802,6 +903,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Add service
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Extend Session Hours Modal (From Front-Desk Timer Cards) */}
+      {extendTx && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/75">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 border border-gray-200 shadow-2xl space-y-4">
+            <div>
+              <h3 className="text-base font-extrabold text-[#1A1A1A]">Extend session hours</h3>
+              <p className="text-xs text-gray-500 mt-0.5 font-mono">
+                {extendTx.transactionID} · {extendTx.outletName} · {extendTx.customerName}
+              </p>
+            </div>
+            <form onSubmit={handleConfirmExtend} className="space-y-4 text-xs">
+              <div className="p-3.5 rounded-xl bg-[#F7F7F7] border border-gray-200 space-y-1">
+                <div className="flex justify-between text-gray-600">
+                  <span>Remembered hourly rate</span>
+                  <span className="font-bold text-[#1A1A1A] tabular-nums">
+                    ₱{(extendTx.hourlyRate || 0).toLocaleString()}/hr
+                  </span>
+                </div>
+                <div className="flex justify-between text-gray-600">
+                  <span>Added charge ({extendHours}h)</span>
+                  <span className="font-bold text-[#1A1A1A] tabular-nums">
+                    +₱
+                    {((extendTx.hourlyRate || 0) * extendHours).toLocaleString('en-PH', {
+                      minimumFractionDigits: 2,
+                    })}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label className="block font-semibold text-gray-600 mb-1.5">Additional hours</label>
+                <div className="flex items-center gap-2">
+                  {[1, 2, 3].map((h) => (
+                    <button
+                      key={h}
+                      type="button"
+                      onClick={() => setExtendHours(h)}
+                      className={`px-3.5 py-2 rounded-xl border text-xs font-bold cursor-pointer ${
+                        extendHours === h
+                          ? 'bg-[#FFE27A] border-[#1A1A1A]/30 text-[#1A1A1A]'
+                          : 'bg-white border-gray-300 text-gray-600'
+                      }`}
+                    >
+                      +{h} hr
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    value={extendHours}
+                    onChange={(e) => setExtendHours(Math.max(1, Number(e.target.value)))}
+                    className="w-20 px-3 py-2 rounded-xl border border-gray-300 font-bold tabular-nums text-center"
+                  />
+                </div>
+              </div>
+              <div className="p-3.5 rounded-xl bg-[#FFE27A] text-[#1A1A1A] flex justify-between items-baseline">
+                <span className="font-semibold">New total payable</span>
+                <span className="text-lg font-extrabold tabular-nums">
+                  ₱
+                  {(
+                    extendTx.totalAmount +
+                    calculateDiscountBreakdown(
+                      (extendTx.hourlyRate || 0) * extendHours,
+                      extendTx.discountApplied
+                    ).totalAmount
+                  ).toLocaleString('en-PH', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setExtendTx(null)}
+                  className="py-2.5 px-4 rounded-xl bg-white border border-gray-300 text-[#1A1A1A] font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="py-2.5 px-4 rounded-xl bg-[#FF5252] hover:bg-[#ff3b3b] text-[#1A1A1A] font-bold cursor-pointer"
+                >
+                  Confirm extension
                 </button>
               </div>
             </form>

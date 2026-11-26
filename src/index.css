@@ -8,3 +8,50 @@
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 }
+
+/* FullCalendar Cafe Lupe Theme Alignment (Revision 003) */
+.cafelupe-fc {
+  --fc-breezy-primary: #FFE27A;
+  --fc-breezy-primary-over: #fed650;
+  --fc-breezy-primary-foreground: #1A1A1A;
+  --fc-breezy-event: #1A1A1A;
+  --fc-breezy-event-contrast: #FFFFFF;
+  --fc-breezy-now: #FF5252;
+  --fc-breezy-highlight: rgba(255, 226, 122, 0.25);
+  --fc-breezy-border: #E5E7EB;
+  --fc-breezy-muted-border: #F3F4F6;
+  --fc-breezy-strong-border: #D1D5DB;
+  --fc-breezy-strong-foreground: #1A1A1A;
+  --fc-breezy-foreground: #374151;
+  --fc-breezy-muted-foreground: #6B7280;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+.cafelupe-fc .fc {
+  font-size: 0.78rem;
+}
+
+.cafelupe-fc .fc-toolbar {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.cafelupe-fc .fc-toolbar-title {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #1A1A1A;
+}
+
+.cafelupe-fc .fc-day-today {
+  background-color: rgba(255, 226, 122, 0.16) !important;
+}
+
+.cafelupe-fc .fc-event {
+  cursor: pointer;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 0.7rem;
+  padding: 1px 4px;
+}
+

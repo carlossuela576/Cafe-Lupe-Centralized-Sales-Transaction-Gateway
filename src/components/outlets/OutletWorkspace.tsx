@@ -17,6 +17,7 @@ import { PosTerminal } from './PosTerminal';
 import { QrPhModal } from '../common/QrPhModal';
 import { ReceiptModal } from '../common/ReceiptModal';
 import { TransactionDetailsModal } from '../common/TransactionDetailsModal';
+import { CentralizedCalendar } from '../common/CentralizedCalendar';
 import {
   InitialDownPaymentCashModal,
   PayBalanceModal,
@@ -46,6 +47,7 @@ interface OutletWorkspaceProps {
   topBanner?: React.ReactNode;
   headerExtra?: React.ReactNode;
   sidebarExtra?: React.ReactNode;
+  suppressExpiredOverlay?: boolean;
 }
 
 function formatRemainingCountdown(timerEndsAt: string | null | undefined, nowMs: number): {
@@ -73,6 +75,7 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
   topBanner,
   headerExtra,
   sidebarExtra,
+  suppressExpiredOverlay = false,
 }) => {
   const [activeNav, setActiveNav] = useState<'dashboard' | 'history' | 'voids'>('dashboard');
   const [viewMode, setViewMode] = useState<'main' | 'create' | 'pos'>('main');
@@ -810,8 +813,8 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
         </div>
       )}
 
-      {/* UNAVOIDABLE BLOCKING TIMER EXPIRY OVERLAY (Revision 002) */}
-      {expiredTimedTxs.length > 0 && (
+      {/* UNAVOIDABLE BLOCKING TIMER EXPIRY OVERLAY (Suppressed when Front-Desk global overlay handles it) */}
+      {!suppressExpiredOverlay && expiredTimedTxs.length > 0 && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
           role="alertdialog"
@@ -945,6 +948,9 @@ export const OutletWorkspace: React.FC<OutletWorkspaceProps> = ({
           </div>
 
           {renderTransactionTable(filteredTransactions.slice(0, 8), false)}
+
+          {/* Centralized Sync Calendar (Revision 003 — defaults to General across all outlets) */}
+          <CentralizedCalendar currentUser={user} currentOutlet={outlet} />
         </div>
       ) : activeNav === 'history' ? (
         /* TAB 2: HISTORY */

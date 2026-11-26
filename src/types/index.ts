@@ -395,3 +395,26 @@ export interface ReconciliationBatch {
   createdAt: string;
 }
 
+// Centralized Sync Calendar Events (Revision 003)
+export type CalendarEventCategory =
+  | 'Booking'
+  | 'Reservation'
+  | 'Tournament'
+  | 'Maintenance'
+  | 'Function';
+
+export interface CalendarEventRecord {
+  calendarID: string;
+  outletSlug: OutletSlug;
+  outletName: string;
+  title: string;
+  customerName: string;
+  category: CalendarEventCategory;
+  start: string;
+  end?: string | null;
+  allDay: boolean;
+  notes?: string;
+  status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
+  createdBy: string;
+  createdAt: string;
+}

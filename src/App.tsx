@@ -12,6 +12,7 @@ import { OutletWorkspace } from './components/outlets/OutletWorkspace';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AccountantDashboard } from './components/accountant/AccountantDashboard';
 import { ProfileModal } from './components/common/ProfileModal';
+import { GlobalTimerAlertOverlay } from './components/common/GlobalTimerAlertOverlay';
 import { ArrowLeft, ChevronDown } from 'lucide-react';
 
 export default function App() {
@@ -155,6 +156,7 @@ export default function App() {
           onOpenProfile={() => setShowProfileModal(true)}
           onLogout={handleLogout}
           sidebarExtra={frontDeskSidebarOutletSelector}
+          suppressExpiredOverlay={true}
         />
       ) : currentUser.role === 'admin' ? (
         <AdminDashboard
@@ -177,6 +179,9 @@ export default function App() {
           onLogout={handleLogout}
         />
       )}
+
+      {/* Global Acknowledge Timer Alert Overlay across entire Front-Desk interface (Revision 003) */}
+      <GlobalTimerAlertOverlay enabled={currentUser.role === 'admin'} />
 
       {showProfileModal && (
         <ProfileModal
